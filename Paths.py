@@ -1,12 +1,18 @@
 from pathlib import Path
+import sys
 
-# Folder containing the application files.
-BASE_DIR = Path(__file__).resolve().parent
+
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
 
 # External configuration folder.
 CONFIGURATION_DIR = (
     BASE_DIR / "configuration"
 )
+
 
 # Configuration subfolders.
 MODELS_DIR = (
