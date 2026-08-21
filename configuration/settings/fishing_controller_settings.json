@@ -1,0 +1,52 @@
+{
+    "fish_targets": [
+        "aligator_gar",
+        "arapaima",
+        "barracuda_fish",
+        "blue_marlin",
+        "cod_fish",
+        "gold_fish",
+        "great_white_shark",
+        "grouper_fish",
+        "hammerhead_shark",
+        "minnow_fish",
+        "pike_fish",
+        "salmon_fish",
+        "snapper_fish",
+        "trout_fish",
+        "tuna_fish"
+    ],
+    "other_targets": [
+        "misc_good",
+        "plastic"
+    ],
+    "action_delay": 1.5,
+    "auto_bait": true,
+    "bait_points": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25
+    ]
+}

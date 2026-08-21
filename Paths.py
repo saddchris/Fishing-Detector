@@ -7,14 +7,18 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).resolve().parent
 
+ASSETS_DIR = (
+    BASE_DIR / "assets"
+)
 
-# External configuration folder.
+ICON_FILE = (
+    ASSETS_DIR / "FishingDet.ico"
+)
+
 CONFIGURATION_DIR = (
     BASE_DIR / "configuration"
 )
 
-
-# Configuration subfolders.
 MODELS_DIR = (
     CONFIGURATION_DIR / "models"
 )

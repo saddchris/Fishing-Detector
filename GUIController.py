@@ -4,7 +4,6 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from pathlib import Path
 from tkinter import messagebox
 
 import torch
@@ -13,7 +12,7 @@ import Detection
 import Main
 import BaitManager
 
-from Paths import SETTINGS_DIR
+from Paths import SETTINGS_DIR, ICON_FILE
 
 
 WINDOW_TITLE = "Fishing Controller"
@@ -138,6 +137,28 @@ class FishingControllerApp:
         self.root.configure(
             bg=BG_COLOR
         )
+
+        # Set application icon.
+        try:
+
+            if ICON_FILE.exists():
+
+                self.root.iconbitmap(
+                    str(ICON_FILE)
+                )
+
+            else:
+
+                print(
+                    f"Icon file not found: {ICON_FILE}"
+                )
+
+        except Exception as error:
+
+            print(
+                f"Could not load application icon: "
+                f"{error}"
+            )
 
         self.root.resizable(
             False,
@@ -1032,7 +1053,8 @@ class FishingControllerApp:
 
         bait_points = get_bait_points()
 
-        selected_points = set()
+        # Do not overwrite the selected_points argument.
+        valid_selected_points = set()
 
         for point in selected_points:
 
@@ -1052,7 +1074,7 @@ class FishingControllerApp:
                 <= len(bait_points)
             ):
 
-                selected_points.add(
+                valid_selected_points.add(
                     point
                 )
 
@@ -1062,7 +1084,8 @@ class FishingControllerApp:
         ):
 
             enabled = (
-                index in selected_points
+                index
+                in valid_selected_points
             )
 
             if index in self.bait_point_vars:

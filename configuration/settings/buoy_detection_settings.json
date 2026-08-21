@@ -1,0 +1,12 @@
+{
+    "buoy_green_percentage": 5.0,
+    "green_min": 40,
+    "green_dominance": 1.1,
+    "missed_red_percentage": 70.0,
+    "red_min": 40,
+    "red_dominance": 2.5,
+    "bait_green_percentage": 0.1,
+    "bait_green_dominance": 0.3,
+    "bait_missed_red_percentage": 0.1,
+    "bait_red_dominance": 0.3
+}
