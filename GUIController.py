@@ -1,4 +1,3 @@
-import gc
 import json
 import queue
 import sys
@@ -6,9 +5,6 @@ import threading
 import tkinter as tk
 from tkinter import messagebox
 
-import torch
-
-import Detection
 import Main
 import BaitManager
 
@@ -36,134 +32,51 @@ DEFAULT_ACTION_DELAY = 3.0
 MIN_ACTION_DELAY = 0.1
 MAX_ACTION_DELAY = 60.0
 
-FISH_MODEL_FILE = Detection.FISH_MODEL_FILE
-OTHER_MODEL_FILE = Detection.OTHER_MODEL_FILE
-
-SETTINGS_FILE = (
-    SETTINGS_DIR
-    / "fishing_controller_settings.json"
-)
+SETTINGS_FILE = SETTINGS_DIR / "fishing_controller_settings.json"
+CLASSES_FILE = SETTINGS_DIR / "classes.json"
 
 
 def get_bait_points():
-    """
-    Get the bait points from BaitManager.
-
-    BaitManager is the single source of truth for
-    bait-point coordinates.
-    """
-
     return BaitManager.get_bait_points()
 
 
 def get_available_targets():
+    try:
+        with open(CLASSES_FILE, "r", encoding="utf-8") as file:
+            classes = json.load(file)
 
-    def read_classes(model_file):
+        fish_targets = classes.get("fish_targets", [])
+        other_targets = classes.get("other_targets", [])
 
-        try:
+        return (
+            list(dict.fromkeys(fish_targets)),
+            list(dict.fromkeys(other_targets)),
+        )
 
-            checkpoint = torch.load(
-                model_file,
-                map_location="cpu",
-            )
-
-            classes = list(
-                checkpoint.get(
-                    "classes",
-                    [],
-                )
-            )
-
-            del checkpoint
-
-            return classes
-
-        except Exception as error:
-
-            print(
-                f"Could not read model classes "
-                f"from {model_file}: {error}"
-            )
-
-            return []
-
-    fish_targets = read_classes(
-        FISH_MODEL_FILE
-    )
-
-    other_targets = read_classes(
-        OTHER_MODEL_FILE
-    )
-
-    gc.collect()
-
-    return (
-        list(
-            dict.fromkeys(
-                fish_targets
-            )
-        ),
-        list(
-            dict.fromkeys(
-                other_targets
-            )
-        ),
-    )
+    except Exception as error:
+        print(
+            f"Could not read classes from {CLASSES_FILE}: {error}"
+        )
+        return [], []
 
 
-FISH_TARGETS, OTHER_TARGETS = (
-    get_available_targets()
-)
+FISH_TARGETS, OTHER_TARGETS = get_available_targets()
 
 
 class FishingControllerApp:
-
-    def __init__(
-        self,
-        root,
-    ):
-
+    def __init__(self, root):
         self.root = root
+        self.root.title(WINDOW_TITLE)
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.root.configure(bg=BG_COLOR)
 
-        self.root.title(
-            WINDOW_TITLE
-        )
-
-        self.root.geometry(
-            f"{WINDOW_WIDTH}x"
-            f"{WINDOW_HEIGHT}"
-        )
-
-        self.root.configure(
-            bg=BG_COLOR
-        )
-
-        # Set application icon.
         try:
-
             if ICON_FILE.exists():
-
-                self.root.iconbitmap(
-                    str(ICON_FILE)
-                )
-
-            else:
-
-                print(
-                    f"Icon file not found: {ICON_FILE}"
-                )
-
+                self.root.iconbitmap(str(ICON_FILE))
         except Exception as error:
+            print(f"Could not load application icon: {error}")
 
-            print(
-                f"Could not load application icon: "
-                f"{error}"
-            )
-
-        self.root.resizable(
-            False,
-            False,
-        )
+        self.root.resizable(False, False)
 
         self.countdown_job = None
         self.countdown_running = False
@@ -172,97 +85,51 @@ class FishingControllerApp:
         self.gui_closing = False
         self.load_in_progress = False
 
-        self.pending_action_delay = (
-            DEFAULT_ACTION_DELAY
-        )
+        self.pending_action_delay = DEFAULT_ACTION_DELAY
 
         self.bait_points_expanded = True
 
         self.log_queue = queue.Queue()
 
         self._stdout = sys.stdout
-
-        sys.stdout = GuiOutput(
-            self
-        )
+        sys.stdout = GuiOutput(self)
 
         self._build_ui()
-
         self._load_settings()
 
         self.delay_var.trace_add(
             "write",
-            lambda *_:
-            self._save_settings(),
+            lambda *_: self._save_settings(),
         )
 
-        Main.set_state_callback(
-            self.main_state_changed
-        )
-
-        Main.set_exit_callback(
-            self.close_gui_from_main
-        )
+        Main.set_state_callback(self.main_state_changed)
+        Main.set_exit_callback(self.close_gui_from_main)
 
         Main.install_hotkeys()
 
-        self._log(
-            "Fishing Controller started.\n"
-        )
+        self._log("Fishing Controller started.\n")
+        self._log(f"Found {len(FISH_TARGETS)} fish classes.\n")
+        self._log(f"Found {len(OTHER_TARGETS)} other classes.\n")
 
-        self._log(
-            f"Found {len(FISH_TARGETS)} "
-            f"fish classes.\n"
-        )
+        self.root.protocol("WM_DELETE_WINDOW", self.close_gui)
 
-        self._log(
-            f"Found {len(OTHER_TARGETS)} "
-            f"other classes.\n"
-        )
-
-        self._log(
-            "Models are NOT loaded yet.\n"
-        )
-
-        self.root.protocol(
-            "WM_DELETE_WINDOW",
-            self.close_gui,
-        )
-
-        self.root.after(
-            50,
-            self._process_log_queue,
-        )
-
-        self.root.after(
-            100,
-            self._monitor_state,
-        )
+        self.root.after(50, self._process_log_queue)
+        self.root.after(100, self._monitor_state)
 
     def _build_ui(self):
-
         tk.Label(
             self.root,
             text="FISHING CONTROLLER",
-            font=(
-                "Arial",
-                20,
-                "bold",
-            ),
+            font=("Arial", 20, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(
-            pady=(18, 3)
-        )
+        ).pack(pady=(18, 3))
 
         status_frame = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
-
-        status_frame.pack(
-            pady=(2, 10)
-        )
+        status_frame.pack(pady=(2, 10))
 
         tk.Label(
             status_frame,
@@ -270,35 +137,22 @@ class FishingControllerApp:
             font=("Arial", 12),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(
-            side="left"
-        )
+        ).pack(side="left")
 
         self.status_value = tk.Label(
             status_frame,
             text="STOPPED",
-            font=(
-                "Arial",
-                12,
-                "bold",
-            ),
+            font=("Arial", 12, "bold"),
             bg=BG_COLOR,
             fg=STOPPED_COLOR,
         )
-
-        self.status_value.pack(
-            side="left",
-            padx=(6, 0),
-        )
+        self.status_value.pack(side="left", padx=(6, 0))
 
         model_status_frame = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
-
-        model_status_frame.pack(
-            pady=(0, 12)
-        )
+        model_status_frame.pack(pady=(0, 12))
 
         tk.Label(
             model_status_frame,
@@ -306,46 +160,29 @@ class FishingControllerApp:
             font=("Arial", 10),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(
-            side="left"
-        )
+        ).pack(side="left")
 
         self.model_status_value = tk.Label(
             model_status_frame,
             text="NOT LOADED",
-            font=(
-                "Arial",
-                10,
-                "bold",
-            ),
+            font=("Arial", 10, "bold"),
             bg=BG_COLOR,
             fg=SECONDARY_COLOR,
         )
-
-        self.model_status_value.pack(
-            side="left",
-            padx=(6, 0),
-        )
+        self.model_status_value.pack(side="left", padx=(6, 0))
 
         tk.Label(
             self.root,
             text="TARGETS",
-            font=(
-                "Arial",
-                14,
-                "bold",
-            ),
+            font=("Arial", 14, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(
-            pady=(0, 3)
-        )
+        ).pack(pady=(0, 3))
 
         targets_container = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
-
         targets_container.pack(
             padx=30,
             fill="both",
@@ -359,7 +196,7 @@ class FishingControllerApp:
             " FISH ",
             FISH_TARGETS,
             self.fish_vars,
-            left=True,
+            True,
         )
 
         self._build_target_panel(
@@ -367,61 +204,42 @@ class FishingControllerApp:
             " OTHER ",
             OTHER_TARGETS,
             self.other_vars,
-            left=False,
+            False,
         )
 
         target_button_frame = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
-
-        target_button_frame.pack(
-            pady=10
-        )
+        target_button_frame.pack(pady=10)
 
         self.select_all_button = self._button(
             target_button_frame,
             "Select All",
             self.select_all_targets,
         )
-
-        self.select_all_button.pack(
-            side="left",
-            padx=4,
-        )
+        self.select_all_button.pack(side="left", padx=4)
 
         self.clear_all_button = self._button(
             target_button_frame,
             "Clear All",
             self.clear_all_targets,
         )
-
-        self.clear_all_button.pack(
-            side="left",
-            padx=4,
-        )
+        self.clear_all_button.pack(side="left", padx=4)
 
         self.select_fish_button = self._button(
             target_button_frame,
             "All Fish",
             self.select_all_fish,
         )
-
-        self.select_fish_button.pack(
-            side="left",
-            padx=4,
-        )
+        self.select_fish_button.pack(side="left", padx=4)
 
         self.clear_fish_button = self._button(
             target_button_frame,
             "Clear Fish",
             self.clear_all_fish,
         )
-
-        self.clear_fish_button.pack(
-            side="left",
-            padx=4,
-        )
+        self.clear_fish_button.pack(side="left", padx=4)
 
         self._build_bait_points_ui()
 
@@ -429,10 +247,7 @@ class FishingControllerApp:
             self.root,
             bg=BG_COLOR,
         )
-
-        delay_frame.pack(
-            pady=(3, 7)
-        )
+        delay_frame.pack(pady=(3, 7))
 
         tk.Label(
             delay_frame,
@@ -440,10 +255,7 @@ class FishingControllerApp:
             font=("Arial", 10),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(
-            side="left",
-            padx=(0, 8),
-        )
+        ).pack(side="left", padx=(0, 8))
 
         self.delay_var = tk.DoubleVar(
             value=DEFAULT_ACTION_DELAY
@@ -462,10 +274,7 @@ class FishingControllerApp:
             buttonbackground=BUTTON_BG,
             font=("Arial", 10),
         )
-
-        self.delay_spinbox.pack(
-            side="left"
-        )
+        self.delay_spinbox.pack(side="left")
 
         tk.Label(
             delay_frame,
@@ -473,23 +282,15 @@ class FishingControllerApp:
             font=("Arial", 10),
             bg=BG_COLOR,
             fg=SECONDARY_COLOR,
-        ).pack(
-            side="left",
-            padx=(5, 0),
-        )
+        ).pack(side="left", padx=(5, 0))
 
         bait_frame = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
+        bait_frame.pack(pady=(4, 8))
 
-        bait_frame.pack(
-            pady=(4, 8)
-        )
-
-        self.auto_bait_var = tk.BooleanVar(
-            value=False
-        )
+        self.auto_bait_var = tk.BooleanVar(value=False)
 
         self.auto_bait_checkbox = tk.Checkbutton(
             bait_frame,
@@ -501,47 +302,30 @@ class FishingControllerApp:
             selectcolor="#444444",
             activebackground=BG_COLOR,
             activeforeground=TEXT_COLOR,
-            font=(
-                "Arial",
-                11,
-                "bold",
-            ),
+            font=("Arial", 11, "bold"),
         )
-
         self.auto_bait_checkbox.pack()
 
         tk.Label(
             bait_frame,
-            text=(
-                "Checks bait before fishing "
-                "and after catches."
-            ),
+            text="Checks bait before fishing and after catches.",
             font=("Arial", 8),
             bg=BG_COLOR,
             fg=SECONDARY_COLOR,
-        ).pack(
-            pady=(2, 0)
-        )
+        ).pack(pady=(2, 0))
 
         tk.Label(
             self.root,
             text="OUTPUT",
-            font=(
-                "Arial",
-                12,
-                "bold",
-            ),
+            font=("Arial", 12, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(
-            pady=(8, 4)
-        )
+        ).pack(pady=(8, 4))
 
         log_frame = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
-
         log_frame.pack(
             padx=25,
             fill="both",
@@ -554,10 +338,7 @@ class FishingControllerApp:
             bg="#111111",
             fg="#dddddd",
             insertbackground=TEXT_COLOR,
-            font=(
-                "Consolas",
-                9,
-            ),
+            font=("Consolas", 9),
             borderwidth=0,
             highlightthickness=0,
             state="disabled",
@@ -588,10 +369,7 @@ class FishingControllerApp:
             self.root,
             bg=BG_COLOR,
         )
-
-        button_frame.pack(
-            pady=10
-        )
+        button_frame.pack(pady=10)
 
         self.load_button = self._button(
             button_frame,
@@ -602,11 +380,7 @@ class FishingControllerApp:
             width=18,
             height=2,
         )
-
-        self.load_button.pack(
-            side="left",
-            padx=6,
-        )
+        self.load_button.pack(side="left", padx=6)
 
         self.start_button = self._button(
             button_frame,
@@ -618,11 +392,7 @@ class FishingControllerApp:
             height=2,
             state="disabled",
         )
-
-        self.start_button.pack(
-            side="left",
-            padx=6,
-        )
+        self.start_button.pack(side="left", padx=6)
 
         self.stop_button = self._button(
             button_frame,
@@ -633,30 +403,20 @@ class FishingControllerApp:
             width=12,
             height=2,
         )
-
-        self.stop_button.pack(
-            side="left",
-            padx=6,
-        )
+        self.stop_button.pack(side="left", padx=6)
 
     def _build_bait_points_ui(self):
-
         bait_points = get_bait_points()
 
         self.bait_points_frame = tk.LabelFrame(
             self.root,
             text=" BAIT POINTS ",
-            font=(
-                "Arial",
-                11,
-                "bold",
-            ),
+            font=("Arial", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
             bd=1,
             relief="groove",
         )
-
         self.bait_points_frame.pack(
             padx=30,
             pady=(0, 8),
@@ -667,7 +427,6 @@ class FishingControllerApp:
             self.bait_points_frame,
             bg=BG_COLOR,
         )
-
         header.pack(
             fill="x",
             padx=8,
@@ -680,34 +439,24 @@ class FishingControllerApp:
             self.toggle_bait_points,
             width=8,
         )
-
         self.bait_points_toggle_button.pack(
             side="right"
         )
 
         self.bait_points_status = tk.Label(
             header,
-            text=(
-                f"{len(bait_points)} "
-                "bait points selected"
-            ),
+            text=f"{len(bait_points)} bait points selected",
             font=("Arial", 9),
             bg=BG_COLOR,
             fg=SECONDARY_COLOR,
         )
-
-        self.bait_points_status.pack(
-            side="left"
-        )
+        self.bait_points_status.pack(side="left")
 
         self.bait_points_content = tk.Frame(
             self.bait_points_frame,
             bg=BG_COLOR,
         )
-
-        self.bait_points_content.pack(
-            fill="x"
-        )
+        self.bait_points_content.pack(fill="x")
 
         self.bait_point_vars = {}
         self.bait_point_widgets = {}
@@ -716,7 +465,6 @@ class FishingControllerApp:
             self.bait_points_content,
             bg=ENTRY_BG,
         )
-
         bait_grid.pack(
             padx=8,
             pady=6,
@@ -727,7 +475,6 @@ class FishingControllerApp:
             bait_points,
             start=1,
         ):
-
             var = tk.BooleanVar(
                 value=BaitManager.get_bait_point_enabled(
                     point
@@ -738,10 +485,7 @@ class FishingControllerApp:
 
             checkbox = tk.Checkbutton(
                 bait_grid,
-                text=(
-                    f"{index}: "
-                    f"{point[0]}, {point[1]}"
-                ),
+                text=f"{index}: {point[0]}, {point[1]}",
                 variable=var,
                 command=self._bait_points_changed,
                 bg=ENTRY_BG,
@@ -770,17 +514,13 @@ class FishingControllerApp:
             self.bait_points_content,
             bg=BG_COLOR,
         )
-
-        bait_button_frame.pack(
-            pady=(2, 7)
-        )
+        bait_button_frame.pack(pady=(2, 7))
 
         self.select_all_bait_button = self._button(
             bait_button_frame,
             "Select All Bait Points",
             self.select_all_bait_points,
         )
-
         self.select_all_bait_button.pack(
             side="left",
             padx=4,
@@ -791,7 +531,6 @@ class FishingControllerApp:
             "Clear All Bait Points",
             self.clear_all_bait_points,
         )
-
         self.clear_all_bait_button.pack(
             side="left",
             padx=4,
@@ -800,37 +539,21 @@ class FishingControllerApp:
         self._update_bait_point_status()
 
     def toggle_bait_points(self):
-
         if self.bait_points_expanded:
-
             self.bait_points_content.pack_forget()
-
-            self.bait_points_toggle_button.config(
-                text="Show"
-            )
-
+            self.bait_points_toggle_button.config(text="Show")
             self.bait_points_expanded = False
-
         else:
-
-            self.bait_points_content.pack(
-                fill="x"
-            )
-
-            self.bait_points_toggle_button.config(
-                text="Hide"
-            )
-
+            self.bait_points_content.pack(fill="x")
+            self.bait_points_toggle_button.config(text="Hide")
             self.bait_points_expanded = True
 
         self._update_bait_point_status()
 
     def _update_bait_point_status(self):
-
         selected = sum(
             1
-            for variable
-            in self.bait_point_vars.values()
+            for variable in self.bait_point_vars.values()
             if variable.get()
         )
 
@@ -848,12 +571,7 @@ class FishingControllerApp:
         command,
         **kwargs,
     ):
-
-        bg = kwargs.pop(
-            "bg",
-            BUTTON_BG,
-        )
-
+        bg = kwargs.pop("bg", BUTTON_BG)
         activebackground = kwargs.pop(
             "activebackground",
             BUTTON_ACTIVE,
@@ -879,15 +597,10 @@ class FishingControllerApp:
         variables,
         left,
     ):
-
         section = tk.LabelFrame(
             parent,
             text=title,
-            font=(
-                "Arial",
-                11,
-                "bold",
-            ),
+            font=("Arial", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
             bd=1,
@@ -895,18 +608,10 @@ class FishingControllerApp:
         )
 
         section.pack(
-            side=(
-                "left"
-                if left
-                else "right"
-            ),
+            side="left" if left else "right",
             fill="both",
             expand=left,
-            padx=(
-                (0, 8)
-                if left
-                else (8, 0)
-            ),
+            padx=(0, 8) if left else (8, 0),
         )
 
         canvas = tk.Canvas(
@@ -957,11 +662,7 @@ class FishingControllerApp:
         )
 
         for target in targets:
-
-            var = tk.BooleanVar(
-                value=False
-            )
-
+            var = tk.BooleanVar(value=False)
             variables[target] = var
 
             tk.Checkbutton(
@@ -983,13 +684,9 @@ class FishingControllerApp:
             )
 
     def _bait_points_changed(self):
-
         bait_points = get_bait_points()
 
-        for index, variable in (
-            self.bait_point_vars.items()
-        ):
-
+        for index, variable in self.bait_point_vars.items():
             if index < 1 or index > len(bait_points):
                 continue
 
@@ -999,21 +696,13 @@ class FishingControllerApp:
             )
 
         self._update_bait_point_status()
-
         self._save_settings()
 
     def select_all_bait_points(self):
-
         bait_points = get_bait_points()
 
-        for index in range(
-            1,
-            len(bait_points) + 1,
-        ):
-
-            self.bait_point_vars[index].set(
-                True
-            )
+        for index in range(1, len(bait_points) + 1):
+            self.bait_point_vars[index].set(True)
 
             BaitManager.set_bait_point_enabled_by_index(
                 index,
@@ -1021,21 +710,13 @@ class FishingControllerApp:
             )
 
         self._update_bait_point_status()
-
         self._save_settings()
 
     def clear_all_bait_points(self):
-
         bait_points = get_bait_points()
 
-        for index in range(
-            1,
-            len(bait_points) + 1,
-        ):
-
-            self.bait_point_vars[index].set(
-                False
-            )
+        for index in range(1, len(bait_points) + 1):
+            self.bait_point_vars[index].set(False)
 
             BaitManager.set_bait_point_enabled_by_index(
                 index,
@@ -1043,56 +724,27 @@ class FishingControllerApp:
             )
 
         self._update_bait_point_status()
-
         self._save_settings()
 
-    def _apply_bait_points(
-        self,
-        selected_points,
-    ):
-
+    def _apply_bait_points(self, selected_points):
         bait_points = get_bait_points()
 
-        # Do not overwrite the selected_points argument.
         valid_selected_points = set()
 
         for point in selected_points:
-
             try:
-
                 point = int(point)
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
+            except (TypeError, ValueError):
                 continue
 
-            if (
-                1 <= point
-                <= len(bait_points)
-            ):
+            if 1 <= point <= len(bait_points):
+                valid_selected_points.add(point)
 
-                valid_selected_points.add(
-                    point
-                )
-
-        for index in range(
-            1,
-            len(bait_points) + 1,
-        ):
-
-            enabled = (
-                index
-                in valid_selected_points
-            )
+        for index in range(1, len(bait_points) + 1):
+            enabled = index in valid_selected_points
 
             if index in self.bait_point_vars:
-
-                self.bait_point_vars[index].set(
-                    enabled
-                )
+                self.bait_point_vars[index].set(enabled)
 
             BaitManager.set_bait_point_enabled_by_index(
                 index,
@@ -1101,91 +753,53 @@ class FishingControllerApp:
 
         self._update_bait_point_status()
 
-    def _log(
-        self,
-        message,
-    ):
-
+    def _log(self, message):
         if message:
-            self.log_queue.put(
-                message
-            )
+            self.log_queue.put(message)
 
     def _process_log_queue(self):
-
         if self.gui_closing:
             return
 
         try:
-
             while True:
+                message = self.log_queue.get_nowait()
 
-                message = (
-                    self.log_queue
-                    .get_nowait()
-                )
-
-                self.log_text.configure(
-                    state="normal"
-                )
-
-                self.log_text.insert(
-                    tk.END,
-                    message
-                )
-
-                self.log_text.see(
-                    tk.END
-                )
-
-                self.log_text.configure(
-                    state="disabled"
-                )
+                self.log_text.configure(state="normal")
+                self.log_text.insert(tk.END, message)
+                self.log_text.see(tk.END)
+                self.log_text.configure(state="disabled")
 
         except queue.Empty:
             pass
 
         if not self.gui_closing:
-
             self.root.after(
                 50,
                 self._process_log_queue,
             )
 
     def _save_settings(self):
-
         if self.gui_closing:
             return
 
         try:
-
             settings = {
                 "fish_targets": [
                     target
-                    for target, variable
-                    in self.fish_vars.items()
+                    for target, variable in self.fish_vars.items()
                     if variable.get()
                 ],
-
                 "other_targets": [
                     target
-                    for target, variable
-                    in self.other_vars.items()
+                    for target, variable in self.other_vars.items()
                     if variable.get()
                 ],
-
-                "action_delay": (
-                    self.delay_var.get()
-                ),
-
-                "auto_bait": (
-                    self.auto_bait_var.get()
-                ),
-
+                "action_delay": self.delay_var.get(),
+                "auto_bait": self.auto_bait_var.get(),
                 "bait_points": [
                     index
-                    for index, variable
-                    in self.bait_point_vars.items()
+                    for index, variable in self.bait_point_vars.items()
                     if variable.get()
                 ],
             }
@@ -1200,7 +814,6 @@ class FishingControllerApp:
                 "w",
                 encoding="utf-8",
             ) as file:
-
                 json.dump(
                     settings,
                     file,
@@ -1208,41 +821,30 @@ class FishingControllerApp:
                 )
 
         except Exception as error:
-
             try:
-
                 self._stdout.write(
-                    f"Could not save settings: "
-                    f"{error}\n"
+                    f"Could not save settings: {error}\n"
                 )
-
             except Exception:
                 pass
 
     def _load_settings(self):
-
         if not SETTINGS_FILE.exists():
-
             self._apply_bait_points(
                 range(
                     1,
                     len(get_bait_points()) + 1,
                 )
             )
-
             return
 
         try:
-
             with open(
                 SETTINGS_FILE,
                 "r",
                 encoding="utf-8",
             ) as file:
-
-                settings = json.load(
-                    file
-                )
+                settings = json.load(file)
 
             saved_fish = set(
                 settings.get(
@@ -1258,36 +860,20 @@ class FishingControllerApp:
                 )
             )
 
-            for target, variable in (
-                self.fish_vars.items()
-            ):
+            for target, variable in self.fish_vars.items():
+                variable.set(target in saved_fish)
 
-                variable.set(
-                    target in saved_fish
-                )
-
-            for target, variable in (
-                self.other_vars.items()
-            ):
-
-                variable.set(
-                    target in saved_other
-                )
+            for target, variable in self.other_vars.items():
+                variable.set(target in saved_other)
 
             try:
-
                 value = float(
                     settings.get(
                         "action_delay",
                         DEFAULT_ACTION_DELAY,
                     )
                 )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
+            except (TypeError, ValueError):
                 value = DEFAULT_ACTION_DELAY
 
             self.delay_var.set(
@@ -1307,9 +893,7 @@ class FishingControllerApp:
                 )
             )
 
-            self.auto_bait_var.set(
-                auto_bait
-            )
+            self.auto_bait_var.set(auto_bait)
 
             saved_bait_points = settings.get(
                 "bait_points",
@@ -1317,7 +901,6 @@ class FishingControllerApp:
             )
 
             if saved_bait_points is None:
-
                 saved_bait_points = range(
                     1,
                     len(get_bait_points()) + 1,
@@ -1332,44 +915,26 @@ class FishingControllerApp:
             )
 
         except Exception as error:
-
             try:
-
                 self._stdout.write(
-                    f"Could not load saved settings: "
-                    f"{error}\n"
+                    f"Could not load saved settings: {error}\n"
                 )
-
             except Exception:
                 pass
 
     def _auto_bait_changed(self):
+        enabled = self.auto_bait_var.get()
 
-        enabled = (
-            self.auto_bait_var.get()
-        )
-
-        Main.set_auto_bait_enabled(
-            enabled
-        )
+        Main.set_auto_bait_enabled(enabled)
 
         self._save_settings()
 
         self._log(
-            "Auto Equip Bait: "
-            f"{'ON' if enabled else 'OFF'}\n"
+            f"Auto Equip Bait: {'ON' if enabled else 'OFF'}\n"
         )
 
-    def _set_controls(
-        self,
-        enabled,
-    ):
-
-        state = (
-            "normal"
-            if enabled
-            else "disabled"
-        )
+    def _set_controls(self, enabled):
+        state = "normal" if enabled else "disabled"
 
         for button in (
             self.select_all_button,
@@ -1380,62 +945,33 @@ class FishingControllerApp:
             self.clear_all_bait_button,
             self.bait_points_toggle_button,
         ):
+            button.config(state=state)
 
-            button.config(
-                state=state
-            )
+        self.delay_spinbox.config(state=state)
+        self.auto_bait_checkbox.config(state=state)
 
-        self.delay_spinbox.config(
-            state=state
-        )
-
-        self.auto_bait_checkbox.config(
-            state=state
-        )
-
-        for widget in (
-            self.bait_point_widgets.values()
-        ):
-
-            widget.config(
-                state=state
-            )
+        for widget in self.bait_point_widgets.values():
+            widget.config(state=state)
 
     def _selected_targets(self):
-
         return (
             [
                 target
-                for target, variable
-                in self.fish_vars.items()
+                for target, variable in self.fish_vars.items()
                 if variable.get()
             ],
-
             [
                 target
-                for target, variable
-                in self.other_vars.items()
+                for target, variable in self.other_vars.items()
                 if variable.get()
             ],
         )
 
     def _action_delay(self):
-
         try:
-
-            value = float(
-                self.delay_var.get()
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            self._log(
-                "Invalid delay value.\n"
-            )
-
+            value = float(self.delay_var.get())
+        except (TypeError, ValueError):
+            self._log("Invalid delay value.\n")
             return None
 
         value = max(
@@ -1446,16 +982,12 @@ class FishingControllerApp:
             ),
         )
 
-        self.delay_var.set(
-            value
-        )
-
+        self.delay_var.set(value)
         self._save_settings()
 
         return value
 
     def _models_loaded(self):
-
         detector = getattr(
             Main,
             "detector",
@@ -1477,127 +1009,82 @@ class FishingControllerApp:
         )
 
     def select_all_targets(self):
-
         for variable in (
             *self.fish_vars.values(),
             *self.other_vars.values(),
         ):
-
             variable.set(True)
 
         self._save_settings()
 
     def clear_all_targets(self):
-
         for variable in (
             *self.fish_vars.values(),
             *self.other_vars.values(),
         ):
-
             variable.set(False)
 
         self._save_settings()
 
     def select_all_fish(self):
-
-        for variable in (
-            self.fish_vars.values()
-        ):
-
+        for variable in self.fish_vars.values():
             variable.set(True)
 
         self._save_settings()
 
     def clear_all_fish(self):
-
-        for variable in (
-            self.fish_vars.values()
-        ):
-
+        for variable in self.fish_vars.values():
             variable.set(False)
 
         self._save_settings()
 
     def load_values(self):
-
-        if (
-            self.gui_closing
-            or self.load_in_progress
-        ):
-
+        if self.gui_closing or self.load_in_progress:
             return
 
         if self.countdown_running:
-
             messagebox.showwarning(
                 "Starting",
                 "Stop the countdown before loading values.",
             )
-
             return
 
         if Main.is_worker_running():
-
             messagebox.showwarning(
                 "Fishing Active",
                 "Stop fishing before loading values.",
             )
-
             return
 
-        selected_fish, selected_other = (
-            self._selected_targets()
-        )
+        selected_fish, selected_other = self._selected_targets()
 
-        if (
-            not selected_fish
-            and not selected_other
-        ):
-
+        if not selected_fish and not selected_other:
             messagebox.showwarning(
                 "No Targets",
                 "Select at least one target before loading values.",
             )
-
             return
 
         if not any(
             variable.get()
-            for variable
-            in self.bait_point_vars.values()
+            for variable in self.bait_point_vars.values()
         ):
-
             messagebox.showwarning(
                 "No Bait Points",
                 "Select at least one bait point.",
             )
-
             return
 
-        if (
-            self._action_delay()
-            is None
-        ):
-
+        if self._action_delay() is None:
             return
 
         self.load_in_progress = True
 
-        self.load_button.config(
-            state="disabled"
-        )
+        self.load_button.config(state="disabled")
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
 
-        self.start_button.config(
-            state="disabled"
-        )
-
-        self.stop_button.config(
-            state="normal"
-        )
-
-        self._set_controls(
-            False
-        )
+        self._set_controls(False)
 
         self.status_value.config(
             text="LOADING",
@@ -1624,9 +1111,7 @@ class FishingControllerApp:
         selected_fish,
         selected_other,
     ):
-
         try:
-
             self._log(
                 "Loading detector and models...\n"
             )
@@ -1635,7 +1120,6 @@ class FishingControllerApp:
                 selected_fish,
                 selected_other,
             ):
-
                 raise RuntimeError(
                     "Main.load_values() returned False."
                 )
@@ -1646,11 +1130,9 @@ class FishingControllerApp:
             )
 
         except Exception as error:
-
             self._log(
                 "ERROR WHILE LOADING MODELS: "
-                f"{type(error).__name__}: "
-                f"{error}\n"
+                f"{type(error).__name__}: {error}\n"
             )
 
             self.root.after(
@@ -1659,7 +1141,6 @@ class FishingControllerApp:
             )
 
     def _values_loaded_successfully(self):
-
         if self.gui_closing:
             return
 
@@ -1675,24 +1156,13 @@ class FishingControllerApp:
             fg=LOADED_COLOR,
         )
 
-        self.load_button.config(
-            state="normal"
-        )
+        self.load_button.config(state="normal")
+        self.start_button.config(state="normal")
+        self.stop_button.config(state="normal")
 
-        self.start_button.config(
-            state="normal"
-        )
-
-        self.stop_button.config(
-            state="normal"
-        )
-
-        self._set_controls(
-            True
-        )
+        self._set_controls(True)
 
     def _values_load_failed(self):
-
         if self.gui_closing:
             return
 
@@ -1708,30 +1178,18 @@ class FishingControllerApp:
             fg=STOPPED_COLOR,
         )
 
-        self.load_button.config(
-            state="normal"
-        )
+        self.load_button.config(state="normal")
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
 
-        self.start_button.config(
-            state="disabled"
-        )
-
-        self.stop_button.config(
-            state="normal"
-        )
-
-        self._set_controls(
-            True
-        )
+        self._set_controls(True)
 
     def start_fishing(self):
-
         if (
             self.gui_closing
             or self.load_in_progress
             or self.countdown_running
         ):
-
             return
 
         if (
@@ -1742,33 +1200,26 @@ class FishingControllerApp:
                 False,
             )
         ):
-
             self._log(
                 "Fishing is already active.\n"
             )
-
             return
 
         if not self._models_loaded():
-
             messagebox.showwarning(
                 "Models Not Loaded",
                 "Select targets and click LOAD VALUES first.",
             )
-
             return
 
         if not any(
             variable.get()
-            for variable
-            in self.bait_point_vars.values()
+            for variable in self.bait_point_vars.values()
         ):
-
             messagebox.showwarning(
                 "No Bait Points",
                 "Select at least one bait point.",
             )
-
             return
 
         delay = self._action_delay()
@@ -1776,29 +1227,16 @@ class FishingControllerApp:
         if delay is None:
             return
 
-        self.pending_action_delay = (
-            delay
-        )
+        self.pending_action_delay = delay
 
         self.countdown_running = True
-
         self.countdown_remaining = 5
 
-        self.load_button.config(
-            state="disabled"
-        )
+        self.load_button.config(state="disabled")
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
 
-        self.start_button.config(
-            state="disabled"
-        )
-
-        self.stop_button.config(
-            state="normal"
-        )
-
-        self._set_controls(
-            False
-        )
+        self._set_controls(False)
 
         self.status_value.config(
             text="STARTING",
@@ -1812,12 +1250,10 @@ class FishingControllerApp:
         self._update_countdown()
 
     def _update_countdown(self):
-
         if (
             self.gui_closing
             or not self.countdown_running
         ):
-
             return
 
         if getattr(
@@ -1825,15 +1261,10 @@ class FishingControllerApp:
             "shutdown_requested",
             False,
         ):
-
-            self.cancel_countdown(
-                False
-            )
-
+            self.cancel_countdown(False)
             return
 
         if self.countdown_remaining <= 0:
-
             self.countdown_running = False
             self.countdown_job = None
 
@@ -1844,59 +1275,43 @@ class FishingControllerApp:
             if Main.start_fishing_worker(
                 self.pending_action_delay
             ):
-
                 self._fishing_started()
-
             else:
-
                 self._fishing_stopped()
 
             return
 
         self._log(
-            f"Starting in "
-            f"{self.countdown_remaining}...\n"
+            f"Starting in {self.countdown_remaining}...\n"
         )
 
         self.countdown_remaining -= 1
 
-        self.countdown_job = (
-            self.root.after(
-                1000,
-                self._update_countdown,
-            )
+        self.countdown_job = self.root.after(
+            1000,
+            self._update_countdown,
         )
 
-    def cancel_countdown(
-        self,
-        write_log=True,
-    ):
-
+    def cancel_countdown(self, write_log=True):
         self.countdown_running = False
-
         self.countdown_remaining = 0
 
         if self.countdown_job is not None:
-
             try:
-
                 self.root.after_cancel(
                     self.countdown_job
                 )
-
             except tk.TclError:
                 pass
 
             self.countdown_job = None
 
         if write_log:
-
             self._log(
                 "START CANCELLED.\n"
             )
 
     def _fishing_started(self):
-
         if self.gui_closing:
             return
 
@@ -1905,29 +1320,17 @@ class FishingControllerApp:
             fg=ACTIVE_COLOR,
         )
 
-        self.load_button.config(
-            state="disabled"
-        )
+        self.load_button.config(state="disabled")
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
 
-        self.start_button.config(
-            state="disabled"
-        )
-
-        self.stop_button.config(
-            state="normal"
-        )
-
-        self._set_controls(
-            False
-        )
+        self._set_controls(False)
 
     def stop_fishing(self):
-
         if self.gui_closing:
             return
 
         if self.countdown_running:
-
             self.cancel_countdown()
 
         Main.stop()
@@ -1935,110 +1338,66 @@ class FishingControllerApp:
         self._fishing_stopped()
 
     def _fishing_stopped(self):
-
         if self.gui_closing:
             return
 
         if self.countdown_running:
-
-            self.cancel_countdown(
-                False
-            )
+            self.cancel_countdown(False)
 
         self.status_value.config(
             text="STOPPED",
             fg=STOPPED_COLOR,
         )
 
-        self.stop_button.config(
-            state="normal"
-        )
+        self.stop_button.config(state="normal")
 
         if self.load_in_progress:
-
-            self.load_button.config(
-                state="disabled"
-            )
-
-            self.start_button.config(
-                state="disabled"
-            )
-
-            self._set_controls(
-                False
-            )
-
+            self.load_button.config(state="disabled")
+            self.start_button.config(state="disabled")
+            self._set_controls(False)
             return
 
-        self.load_button.config(
-            state="normal"
-        )
+        self.load_button.config(state="normal")
 
-        self._set_controls(
-            True
-        )
+        self._set_controls(True)
 
         if self._models_loaded():
-
-            self.start_button.config(
-                state="normal"
-            )
+            self.start_button.config(state="normal")
 
             self.model_status_value.config(
                 text="LOADED",
                 fg=LOADED_COLOR,
             )
-
         else:
-
-            self.start_button.config(
-                state="disabled"
-            )
+            self.start_button.config(state="disabled")
 
             self.model_status_value.config(
                 text="NOT LOADED",
                 fg=SECONDARY_COLOR,
             )
 
-    def main_state_changed(
-        self,
-        active,
-    ):
-
+    def main_state_changed(self, active):
         if self.gui_closing:
             return
 
         try:
-
             self.root.after(
                 0,
-                lambda:
-                self._apply_main_state(
-                    active
-                ),
+                lambda: self._apply_main_state(active),
             )
-
         except tk.TclError:
             pass
 
-    def _apply_main_state(
-        self,
-        active,
-    ):
-
+    def _apply_main_state(self, active):
         if self.gui_closing:
             return
 
         if active:
-
             self._fishing_started()
-
         elif not self.countdown_running:
-
             self._fishing_stopped()
 
     def _monitor_state(self):
-
         if self.gui_closing:
             return
 
@@ -2047,38 +1406,22 @@ class FishingControllerApp:
             "shutdown_requested",
             False,
         ):
-
             if self.countdown_running:
-
-                self.cancel_countdown(
-                    False
-                )
+                self.cancel_countdown(False)
 
             self.status_value.config(
                 text="STOPPED",
                 fg=STOPPED_COLOR,
             )
 
-            self.load_button.config(
-                state="disabled"
-            )
+            self.load_button.config(state="disabled")
+            self.start_button.config(state="disabled")
+            self.stop_button.config(state="disabled")
 
-            self.start_button.config(
-                state="disabled"
-            )
-
-            self.stop_button.config(
-                state="disabled"
-            )
-
-            self._set_controls(
-                False
-            )
-
+            self._set_controls(False)
             return
 
         if self.load_in_progress:
-
             self.status_value.config(
                 text="LOADING",
                 fg=STARTING_COLOR,
@@ -2098,7 +1441,6 @@ class FishingControllerApp:
                 False,
             )
         ):
-
             self.status_value.config(
                 text=(
                     "STARTING"
@@ -2113,33 +1455,27 @@ class FishingControllerApp:
             )
 
         else:
-
             self._fishing_stopped()
 
         if not self.gui_closing:
-
             self.root.after(
                 150,
                 self._monitor_state,
             )
 
     def close_gui_from_main(self):
-
         if self.gui_closing:
             return
 
         try:
-
             self.root.after(
                 0,
                 self.close_gui,
             )
-
         except tk.TclError:
             pass
 
     def close_gui(self):
-
         if self.gui_closing:
             return
 
@@ -2147,72 +1483,43 @@ class FishingControllerApp:
 
         self.gui_closing = True
 
-        self.cancel_countdown(
-            False
-        )
+        self.cancel_countdown(False)
 
         try:
-
             Main.emergency_exit()
-
         except Exception as error:
-
             try:
-
                 self._stdout.write(
-                    f"Shutdown error: "
-                    f"{error}\n"
+                    f"Shutdown error: {error}\n"
                 )
-
             except Exception:
                 pass
 
         sys.stdout = self._stdout
 
         try:
-
             self.root.destroy()
-
         except tk.TclError:
             pass
 
 
 class GuiOutput:
-
-    def __init__(
-        self,
-        app,
-    ):
-
+    def __init__(self, app):
         self.app = app
 
-    def write(
-        self,
-        text,
-    ):
-
+    def write(self, text):
         if text:
-
-            self.app._log(
-                text
-            )
+            self.app._log(text)
 
     def flush(self):
-
         return None
 
 
 def main():
-
     root = tk.Tk()
-
-    FishingControllerApp(
-        root
-    )
-
+    FishingControllerApp(root)
     root.mainloop()
 
 
 if __name__ == "__main__":
-
     main()
