@@ -1,4 +1,7 @@
 import gc
+import os
+import sys
+import subprocess
 import threading
 import time
 import winsound
@@ -55,6 +58,35 @@ def _safe_print(message=""):
         print(message)
     except Exception:
         pass
+
+
+def _start_updater():
+    if "--updated" in sys.argv:
+        return
+
+    try:
+        application_directory = os.path.dirname(
+            os.path.abspath(sys.argv[0])
+        )
+
+        updater_path = os.path.join(
+            application_directory,
+            "Updater.exe",
+        )
+
+        if not os.path.exists(updater_path):
+            return
+
+        subprocess.Popen(
+            [updater_path],
+            cwd=application_directory,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+    except Exception as error:
+        _safe_print(
+            f"Updater launch error: {error}"
+        )
 
 
 def set_state_callback(callback):
@@ -145,7 +177,9 @@ def _notify_hotkey_callback():
         callback = hotkey_callback
 
     if callback is None:
-        _safe_print("] hotkey pressed, but no hotkey callback has been registered.")
+        _safe_print(
+            "] hotkey pressed, but no hotkey callback has been registered."
+        )
         return
 
     try:
@@ -1264,6 +1298,7 @@ def cleanup():
 
 
 if __name__ == "__main__":
+    _start_updater()
     install_hotkeys()
 
     try:
