@@ -1,15 +1,16 @@
-import sys
-import os
-import time
-import shutil
-import zipfile
-import tempfile
-import subprocess
-import urllib.request
 import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
+import time
+import urllib.request
+import urllib.error
+import zipfile
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox
 
 
 GITHUB_OWNER = "saddchris"
@@ -17,21 +18,13 @@ GITHUB_REPO = "Fishing-Detector"
 
 APP_EXE = "FishingDet.exe"
 UPDATER_EXE = "Updater.exe"
-CURRENT_VERSION = "1.1.0"
+
+VERSION_FILE = "version.json"
 
 LATEST_RELEASE_URL = (
     f"https://api.github.com/repos/"
     f"{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 )
-
-PROTECTED_CONFIG_FOLDERS = {
-    "bait_images",
-    "config_images",
-}
-
-PROTECTED_CONFIG_FILES = {
-    "fishing_controller_settings.json",
-}
 
 
 def get_install_directory():
@@ -40,113 +33,343 @@ def get_install_directory():
     )
 
 
-def get_latest_release():
-    request = urllib.request.Request(
-        LATEST_RELEASE_URL,
-        headers={
-            "User-Agent": "FishingDet-Updater",
-            "Accept": "application/vnd.github+json",
-        },
+def get_updater_icon_path():
+    return os.path.join(
+        get_install_directory(),
+        "assets",
+        "Updater.ico",
     )
 
-    with urllib.request.urlopen(
-        request,
-        timeout=10,
-    ) as response:
-        return json.loads(
-            response.read().decode("utf-8")
+
+def get_current_version():
+    install_directory = get_install_directory()
+
+    version_path = os.path.join(
+        install_directory,
+        VERSION_FILE,
+    )
+
+    try:
+        with open(
+            version_path,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        version = data.get("version")
+
+        if not version:
+            raise ValueError(
+                "version.json does not contain a 'version' value."
+            )
+
+        return str(version).strip()
+
+    except Exception as error:
+        print(
+            f"Could not read installed version: "
+            f"{type(error).__name__}: {error}"
         )
+
+        return "0.0.0"
 
 
 def version_tuple(version):
-    version = version.lower().strip()
+    version = str(version).strip()
 
-    if version.startswith("v"):
+    if version.lower().startswith("v"):
         version = version[1:]
 
     parts = version.split(".")
     result = []
 
     for part in parts:
-        number = ""
+        digits = ""
 
         for character in part:
             if character.isdigit():
-                number += character
+                digits += character
             else:
                 break
 
-        result.append(
-            int(number or 0)
-        )
+        if digits:
+            result.append(int(digits))
+        else:
+            result.append(0)
 
-    while len(result) < 3:
-        result.append(0)
-
-    return tuple(result[:3])
+    return tuple(result)
 
 
-def update_available(latest_version):
-    return (
-        version_tuple(latest_version)
-        > version_tuple(CURRENT_VERSION)
+def get_latest_release():
+    request = urllib.request.Request(
+        LATEST_RELEASE_URL,
+        headers={
+            "User-Agent": "Fishing-Detector-Updater"
+        },
     )
-
-
-def update_if_needed():
-    install_directory = get_install_directory()
-
-    updater_path = os.path.join(
-        install_directory,
-        UPDATER_EXE,
-    )
-
-    if not os.path.exists(updater_path):
-        return True
 
     try:
-        release = get_latest_release()
+        with urllib.request.urlopen(
+            request,
+            timeout=15,
+        ) as response:
+            data = response.read().decode("utf-8")
 
-        latest_version = release.get(
-            "tag_name",
-            "",
+        return json.loads(data)
+
+    except urllib.error.HTTPError as error:
+        print(
+            f"GitHub HTTP error: "
+            f"{error.code} {error.reason}"
         )
 
-        if not latest_version:
-            return True
-
-        if not update_available(
-            latest_version
-        ):
-            return True
-
-        subprocess.Popen(
-            [
-                updater_path,
-            ],
+    except urllib.error.URLError as error:
+        print(
+            f"GitHub connection error: "
+            f"{error.reason}"
         )
-
-        return False
 
     except Exception as error:
         print(
-            f"Could not check for updates: "
+            f"Could not get latest release: "
             f"{type(error).__name__}: {error}"
         )
 
+    return None
+
+
+def get_latest_version(release):
+    if not release:
+        return None
+
+    tag_name = release.get("tag_name")
+
+    if not tag_name:
+        return None
+
+    return str(tag_name).strip()
+
+
+def update_available(latest_version):
+    if not latest_version:
+        return False
+
+    current_version = get_current_version()
+
+    latest_tuple = version_tuple(
+        latest_version
+    )
+
+    current_tuple = version_tuple(
+        current_version
+    )
+
+    print(
+        f"Installed version: {current_version}"
+    )
+
+    print(
+        f"Latest version:    {latest_version}"
+    )
+
+    return latest_tuple > current_tuple
+
+
+def get_update_zip_asset(release):
+    if not release:
+        return None
+
+    assets = release.get("assets", [])
+
+    for asset in assets:
+        name = asset.get("name", "")
+
+        if name.lower().endswith(".zip"):
+            return asset
+
+    return None
+
+
+def download_file(url, destination):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Fishing-Detector-Updater"
+        },
+    )
+
+    with urllib.request.urlopen(
+        request,
+        timeout=60,
+    ) as response:
+        with open(
+            destination,
+            "wb",
+        ) as output:
+            shutil.copyfileobj(
+                response,
+                output,
+            )
+
+
+def should_skip_path(relative_path):
+    normalized = (
+        relative_path
+        .replace("\\", "/")
+        .strip("/")
+    )
+
+    parts = normalized.split("/")
+
+    if not parts:
+        return False
+
+    if normalized.lower() == UPDATER_EXE.lower():
         return True
 
+    protected_directories = {
+        "config",
+        "configs",
+        "data",
+        "userdata",
+        "user_data",
+        "settings",
+    }
 
-class UpdaterWindow:
-    def __init__(self):
-        self.root = tk.Tk()
+    for part in parts[:-1]:
+        if part.lower() in protected_directories:
+            return True
+
+    protected_files = {
+        "config.json",
+        "settings.json",
+        "user_settings.json",
+        "userdata.json",
+        "user_data.json",
+    }
+
+    filename = parts[-1].lower()
+
+    if filename in protected_files:
+        return True
+
+    return False
+
+
+def copy_update_files(
+    source_directory,
+    install_directory,
+    window=None,
+):
+    for root, directories, files in os.walk(
+        source_directory
+    ):
+        relative_root = os.path.relpath(
+            root,
+            source_directory,
+        )
+
+        if relative_root == ".":
+            relative_root = ""
+
+        directories[:] = [
+            directory
+            for directory in directories
+            if not should_skip_path(
+                os.path.join(
+                    relative_root,
+                    directory,
+                )
+            )
+        ]
+
+        for directory in directories:
+            relative_directory = os.path.join(
+                relative_root,
+                directory,
+            )
+
+            if should_skip_path(
+                relative_directory
+            ):
+                continue
+
+            destination_directory = os.path.join(
+                install_directory,
+                relative_directory,
+            )
+
+            os.makedirs(
+                destination_directory,
+                exist_ok=True,
+            )
+
+        for filename in files:
+            relative_file = os.path.join(
+                relative_root,
+                filename,
+            )
+
+            if should_skip_path(
+                relative_file
+            ):
+                continue
+
+            source_file = os.path.join(
+                source_directory,
+                relative_file,
+            )
+
+            destination_file = os.path.join(
+                install_directory,
+                relative_file,
+            )
+
+            destination_parent = os.path.dirname(
+                destination_file
+            )
+
+            os.makedirs(
+                destination_parent,
+                exist_ok=True,
+            )
+
+            if window:
+                window.set_status(
+                    f"Installing: {relative_file}"
+                )
+
+            shutil.copy2(
+                source_file,
+                destination_file,
+            )
+
+
+class UpdateWindow:
+
+    def __init__(
+        self,
+        root,
+        current_version,
+        latest_version,
+    ):
+        self.root = root
+
+        icon_path = get_updater_icon_path()
+
+        if os.path.isfile(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+            except Exception:
+                pass
 
         self.root.title(
-            "FishingDet Updater"
+            "Fishing Detector Updater"
         )
 
         self.root.geometry(
-            "430x165"
+            "500x220"
         )
 
         self.root.resizable(
@@ -154,111 +377,93 @@ class UpdaterWindow:
             False,
         )
 
-        self.status = tk.StringVar(
-            value="Checking for updates..."
+        self.current_version = current_version
+        self.latest_version = latest_version
+
+        title = tk.Label(
+            root,
+            text="Fishing Detector Update",
+            font=(
+                "Segoe UI",
+                16,
+                "bold",
+            ),
         )
 
-        self.file_name = tk.StringVar(
-            value=""
+        title.pack(
+            pady=(25, 10)
         )
 
-        main_frame = ttk.Frame(
-            self.root,
-            padding=18,
+        self.version_label = tk.Label(
+            root,
+            text=(
+                f"Updating "
+                f"{current_version} "
+                f"→ "
+                f"{latest_version}"
+            ),
+            font=(
+                "Segoe UI",
+                11,
+            ),
         )
 
-        main_frame.pack(
-            fill="both",
-            expand=True,
+        self.version_label.pack(
+            pady=5
         )
 
-        self.progress = ttk.Progressbar(
-            main_frame,
-            orient="horizontal",
-            length=390,
-            mode="determinate",
+        self.status_label = tk.Label(
+            root,
+            text="Preparing update...",
+            font=(
+                "Segoe UI",
+                10,
+            ),
         )
 
-        self.progress.pack(
-            fill="x",
-            pady=(8, 12),
+        self.status_label.pack(
+            pady=(15, 5)
         )
 
-        ttk.Label(
-            main_frame,
-            textvariable=self.status,
-            anchor="center",
-        ).pack(
-            fill="x",
-            pady=2,
+        self.progress = tk.DoubleVar(
+            value=0
         )
 
-        ttk.Label(
-            main_frame,
-            textvariable=self.file_name,
-            anchor="center",
-        ).pack(
-            fill="x",
-            pady=2,
+        self.progress_bar = tk.Scale(
+            root,
+            variable=self.progress,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            showvalue=False,
+            state=tk.DISABLED,
+            length=400,
         )
 
-        self.root.protocol(
-            "WM_DELETE_WINDOW",
-            self.disable_close,
+        self.progress_bar.pack(
+            pady=10
         )
-
-    def disable_close(self):
-        pass
 
     def set_status(self, text):
         try:
             self.root.after(
                 0,
-                self._set_status,
-                text,
+                lambda: self.status_label.config(
+                    text=text
+                ),
             )
         except Exception:
-            pass
-
-    def _set_status(self, text):
-        try:
-            self.status.set(text)
-            self.root.update_idletasks()
-        except tk.TclError:
-            pass
-
-    def set_file(self, text):
-        try:
-            self.root.after(
-                0,
-                self._set_file,
-                text,
-            )
-        except Exception:
-            pass
-
-    def _set_file(self, text):
-        try:
-            self.file_name.set(text)
-            self.root.update_idletasks()
-        except tk.TclError:
             pass
 
     def set_progress(self, value):
         try:
             self.root.after(
                 0,
-                self._set_progress,
-                value,
+                lambda: self.progress.set(
+                    value
+                ),
             )
         except Exception:
-            pass
-
-    def _set_progress(self, value):
-        try:
-            self.progress["value"] = value
-            self.root.update_idletasks()
-        except tk.TclError:
             pass
 
     def close(self):
@@ -271,690 +476,472 @@ class UpdaterWindow:
             pass
 
 
-def download_file(
-    url,
-    destination,
+def update_worker(
     window,
+    release,
 ):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "FishingDet-Updater",
-        },
-    )
-
-    with urllib.request.urlopen(
-        request,
-        timeout=60,
-    ) as response:
-
-        total_size = response.headers.get(
-            "Content-Length"
-        )
-
-        total_size = (
-            int(total_size)
-            if total_size
-            else None
-        )
-
-        downloaded = 0
-
-        with open(
-            destination,
-            "wb",
-        ) as file:
-
-            while True:
-                data = response.read(
-                    1024 * 1024
-                )
-
-                if not data:
-                    break
-
-                file.write(data)
-
-                downloaded += len(data)
-
-                if total_size:
-                    percentage = (
-                        downloaded
-                        / total_size
-                        * 100
-                    )
-
-                    window.set_progress(
-                        percentage
-                    )
-
-                    window.set_status(
-                        f"Downloading update... "
-                        f"{percentage:.1f}%"
-                    )
-
-    window.set_progress(100)
-
-
-def is_application_running():
-    try:
-        processes = subprocess.run(
-            [
-                "tasklist",
-                "/FI",
-                f"IMAGENAME eq {APP_EXE}",
-            ],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-
-        return (
-            APP_EXE.lower()
-            in processes.stdout.lower()
-        )
-
-    except Exception:
-        return False
-
-
-def close_application(window):
-    window.set_status(
-        "Closing FishingDet..."
-    )
-
-    window.set_file("")
+    temporary_directory = None
 
     try:
-        subprocess.run(
-            [
-                "taskkill",
-                "/F",
-                "/IM",
-                APP_EXE,
-            ],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        install_directory = (
+            get_install_directory()
         )
 
-    except Exception:
-        pass
-
-    for _ in range(60):
-
-        if not is_application_running():
-            return True
-
-        time.sleep(0.5)
-
-    return False
-
-
-def wait_for_application_to_close(window):
-    window.set_status(
-        "Waiting for FishingDet to close..."
-    )
-
-    window.set_file("")
-
-    for _ in range(60):
-
-        if not is_application_running():
-            return True
-
-        time.sleep(0.5)
-
-    return False
-
-
-def should_skip_path(relative_path):
-    normalized = relative_path.replace(
-        "\\",
-        "/",
-    ).strip("/")
-
-    parts = normalized.split("/")
-
-    if not parts:
-        return False
-
-    if (
-        normalized.lower()
-        == UPDATER_EXE.lower()
-    ):
-        return True
-
-    if (
-        len(parts) >= 2
-        and parts[0].lower()
-        == "configuration"
-    ):
-
-        if (
-            parts[1].lower()
-            in {
-                folder.lower()
-                for folder
-                in PROTECTED_CONFIG_FOLDERS
-            }
-        ):
-            return True
-
-        if (
-            len(parts) == 3
-            and parts[1].lower()
-            == "settings"
-            and parts[2].lower()
-            in {
-                filename.lower()
-                for filename
-                in PROTECTED_CONFIG_FILES
-            }
-        ):
-            return True
-
-    return False
-
-
-def safe_extract_archive(
-    archive,
-    destination,
-):
-    destination = os.path.abspath(
-        destination
-    )
-
-    for member in archive.infolist():
-
-        member_path = os.path.abspath(
-            os.path.join(
-                destination,
-                member.filename,
-            )
+        current_version = (
+            get_current_version()
         )
 
-        if (
-            os.path.commonpath(
-                [
-                    destination,
-                    member_path,
-                ]
-            )
-            != destination
-        ):
+        latest_version = (
+            get_latest_version(release)
+        )
+
+        if not latest_version:
             raise RuntimeError(
-                "The update ZIP contains "
-                "an unsafe file path."
+                "GitHub release does not contain "
+                "a valid version tag."
             )
 
-    archive.extractall(
-        destination
-    )
+        window.set_status(
+            f"Current version: {current_version}"
+        )
 
+        time.sleep(0.5)
 
-def extract_update(
-    zip_path,
-    install_directory,
-    window,
-):
-    temporary_directory = tempfile.mkdtemp(
-        prefix="FishingDetUpdate_"
-    )
+        asset = get_update_zip_asset(
+            release
+        )
 
-    try:
+        if not asset:
+            raise RuntimeError(
+                "No ZIP asset was found in "
+                "the GitHub release."
+            )
+
+        download_url = asset.get(
+            "browser_download_url"
+        )
+
+        if not download_url:
+            raise RuntimeError(
+                "The release ZIP does not have "
+                "a valid download URL."
+            )
+
+        zip_filename = asset.get(
+            "name",
+            "update.zip",
+        )
+
+        temporary_directory = tempfile.mkdtemp(
+            prefix="FishingDetectorUpdate_"
+        )
+
+        zip_path = os.path.join(
+            temporary_directory,
+            zip_filename,
+        )
+
+        extract_directory = os.path.join(
+            temporary_directory,
+            "extracted",
+        )
+
+        os.makedirs(
+            extract_directory,
+            exist_ok=True,
+        )
+
+        window.set_status(
+            "Downloading update..."
+        )
+
+        download_file(
+            download_url,
+            zip_path,
+        )
+
+        window.set_progress(
+            35
+        )
+
+        window.set_status(
+            "Extracting update..."
+        )
 
         with zipfile.ZipFile(
             zip_path,
             "r",
         ) as archive:
-
-            safe_extract_archive(
-                archive,
-                temporary_directory,
+            archive.extractall(
+                extract_directory
             )
 
-        extracted_items = os.listdir(
-            temporary_directory
+        window.set_progress(
+            55
         )
 
-        if (
-            len(extracted_items) == 1
-            and os.path.isdir(
-                os.path.join(
-                    temporary_directory,
-                    extracted_items[0],
-                )
-            )
-        ):
+        extracted_items = os.listdir(
+            extract_directory
+        )
 
-            source_directory = os.path.join(
-                temporary_directory,
+        if len(extracted_items) == 1:
+            possible_directory = os.path.join(
+                extract_directory,
                 extracted_items[0],
             )
 
+            if os.path.isdir(
+                possible_directory
+            ):
+                source_directory = (
+                    possible_directory
+                )
+            else:
+                source_directory = (
+                    extract_directory
+                )
         else:
-
             source_directory = (
-                temporary_directory
+                extract_directory
             )
 
-        files = []
-
-        for root, directories, filenames in os.walk(
-            source_directory
-        ):
-
-            relative_root = os.path.relpath(
-                root,
-                source_directory,
-            )
-
-            if relative_root == ".":
-                relative_root = ""
-
-            remaining_directories = []
-
-            for directory in directories:
-
-                relative_directory = os.path.join(
-                    relative_root,
-                    directory,
-                )
-
-                if not should_skip_path(
-                    relative_directory
-                ):
-                    remaining_directories.append(
-                        directory
-                    )
-
-            directories[:] = (
-                remaining_directories
-            )
-
-            for filename in filenames:
-
-                relative_file = os.path.join(
-                    relative_root,
-                    filename,
-                )
-
-                if should_skip_path(
-                    relative_file
-                ):
-                    continue
-
-                files.append(
-                    (
-                        root,
-                        filename,
-                        relative_file,
-                    )
-                )
-
-        total_files = len(files)
-
-        for index, (
-            root,
-            filename,
-            relative_file,
-        ) in enumerate(
-            files,
-            start=1,
-        ):
-
-            source = os.path.join(
-                root,
-                filename,
-            )
-
-            destination = os.path.join(
-                install_directory,
-                relative_file,
-            )
-
-            destination_directory = os.path.dirname(
-                destination
-            )
-
-            os.makedirs(
-                destination_directory,
-                exist_ok=True,
-            )
-
-            window.set_file(
-                f"{relative_file} "
-                f"({index}/{total_files})"
-            )
-
-            window.set_status(
-                "Installing update..."
-            )
-
-            shutil.copy2(
-                source,
-                destination,
-            )
-
-            percentage = (
-                index
-                / total_files
-                * 100
-                if total_files
-                else 100
-            )
-
-            window.set_progress(
-                percentage
-            )
-
-    finally:
-
-        shutil.rmtree(
-            temporary_directory,
-            ignore_errors=True,
+        update_version_path = os.path.join(
+            source_directory,
+            VERSION_FILE,
         )
 
-
-def start_application(
-    install_directory,
-):
-    application = os.path.join(
-        install_directory,
-        APP_EXE,
-    )
-
-    if not os.path.exists(
-        application
-    ):
-        return False
-
-    subprocess.Popen(
-        [
-            application,
-            "--updated",
-        ],
-        cwd=install_directory,
-    )
-
-    return True
-
-
-def show_error(
-    window,
-    message,
-):
-    window.set_status(
-        message
-    )
-
-    window.set_file("")
-
-    time.sleep(3)
-
-
-def update_worker(
-    window,
-):
-    try:
-
-        window.set_status(
-            f"Current version: "
-            f"{CURRENT_VERSION}"
-        )
+        if not os.path.isfile(
+            update_version_path
+        ):
+            raise RuntimeError(
+                "The update ZIP does not contain "
+                f"{VERSION_FILE}."
+            )
 
         try:
+            with open(
+                update_version_path,
+                "r",
+                encoding="utf-8",
+            ) as file:
+                update_version_data = json.load(
+                    file
+                )
 
-            release = (
-                get_latest_release()
-            )
+            package_version = str(
+                update_version_data.get(
+                    "version",
+                    "",
+                )
+            ).strip()
 
         except Exception as error:
-
-            show_error(
-                window,
-                f"Could not check for "
-                f"updates: {error}",
+            raise RuntimeError(
+                f"Invalid {VERSION_FILE}: "
+                f"{error}"
             )
 
-            return
-
-        latest_version = release.get(
-            "tag_name",
-            "",
-        )
-
-        if not latest_version:
-
-            show_error(
-                window,
-                "Could not determine "
-                "latest version.",
-            )
-
-            return
-
-        window.set_status(
-            f"Latest version: "
-            f"{latest_version}"
-        )
-
-        if not update_available(
-            latest_version
+        if (
+            version_tuple(package_version)
+            != version_tuple(latest_version)
         ):
-
-            window.set_progress(
-                100
+            raise RuntimeError(
+                "Version mismatch detected.\n\n"
+                f"GitHub release: {latest_version}\n"
+                f"ZIP version: {package_version}"
             )
 
-            window.set_status(
-                f"Already running the "
-                f"latest version "
-                f"({latest_version})."
-            )
-
-            window.set_file("")
-
-            time.sleep(1)
-
-            window.close()
-
-            return
-
-        assets = release.get(
-            "assets",
-            [],
+        window.set_status(
+            "Closing Fishing Detector..."
         )
 
-        zip_asset = None
+        time.sleep(1)
 
-        for asset in assets:
-
-            name = asset.get(
-                "name",
-                "",
-            )
-
-            if name.lower().endswith(
-                ".zip"
-            ):
-
-                zip_asset = asset
-                break
-
-        if zip_asset is None:
-
-            show_error(
-                window,
-                "No ZIP update was found "
-                "in the GitHub release.",
-            )
-
-            return
-
-        download_url = zip_asset.get(
-            "browser_download_url"
-        )
-
-        if not download_url:
-
-            show_error(
-                window,
-                "Release ZIP has no "
-                "download URL.",
-            )
-
-            return
-
-        install_directory = get_install_directory()
-
-        temporary_zip = os.path.join(
-            tempfile.gettempdir(),
-            "FishingDet_Update.zip",
+        window.set_progress(
+            65
         )
 
         window.set_status(
-            f"Update available: "
-            f"{latest_version}"
+            "Installing update..."
         )
 
-        window.set_file(
-            zip_asset.get(
-                "name",
-                "FishingDet update",
-            )
+        copy_update_files(
+            source_directory,
+            install_directory,
+            window,
         )
 
         window.set_progress(
-            0
+            90
         )
 
-        try:
+        installed_version = (
+            get_current_version()
+        )
 
-            download_file(
-                download_url,
-                temporary_zip,
-                window,
-            )
-
-        except Exception as error:
-
-            show_error(
-                window,
-                f"Download failed: "
-                f"{error}",
-            )
-
-            return
-
-        if is_application_running():
-
-            if not close_application(
-                window
-            ):
-
-                show_error(
-                    window,
-                    "FishingDet did not "
-                    "close in time.",
-                )
-
-                return
-
-        if not wait_for_application_to_close(
-            window
+        if (
+            version_tuple(installed_version)
+            != version_tuple(latest_version)
         ):
-
-            show_error(
-                window,
-                "FishingDet is still running.",
+            raise RuntimeError(
+                "Update completed, but the installed "
+                "version could not be verified.\n\n"
+                f"Expected: {latest_version}\n"
+                f"Installed: {installed_version}"
             )
-
-            return
-
-        try:
-
-            extract_update(
-                temporary_zip,
-                install_directory,
-                window,
-            )
-
-        except Exception as error:
-
-            show_error(
-                window,
-                f"Update installation "
-                f"failed: {error}",
-            )
-
-            return
-
-        try:
-
-            os.remove(
-                temporary_zip
-            )
-
-        except Exception:
-            pass
 
         window.set_progress(
             100
         )
 
         window.set_status(
-            f"Updated successfully "
-            f"to {latest_version}."
-        )
-
-        window.set_file(
-            "Starting FishingDet..."
+            f"Update complete: {installed_version}"
         )
 
         time.sleep(1)
 
-        if not start_application(
-            install_directory
-        ):
+        app_path = os.path.join(
+            install_directory,
+            APP_EXE,
+        )
 
-            show_error(
-                window,
-                "Could not start FishingDet.",
+        if not os.path.isfile(
+            app_path
+        ):
+            raise RuntimeError(
+                f"{APP_EXE} was not found after "
+                "the update."
             )
 
-            return
+        subprocess.Popen(
+            [
+                app_path,
+                "--updated",
+            ],
+            cwd=install_directory,
+        )
 
         window.close()
 
     except Exception as error:
-
-        show_error(
-            window,
-            f"Updater error: {error}",
+        print(
+            f"Update failed: "
+            f"{type(error).__name__}: {error}"
         )
 
+        def show_error():
+            messagebox.showerror(
+                "Update Failed",
+                (
+                    "The update could not be installed.\n\n"
+                    f"{type(error).__name__}: {error}"
+                ),
+                parent=window.root,
+            )
 
-def main():
+            window.root.destroy()
 
-    window = UpdaterWindow()
+        try:
+            window.root.after(
+                0,
+                show_error,
+            )
+        except Exception:
+            pass
 
-    worker = threading.Thread(
+    finally:
+        if temporary_directory:
+            try:
+                shutil.rmtree(
+                    temporary_directory,
+                    ignore_errors=True,
+                )
+            except Exception:
+                pass
+
+
+def update_if_needed():
+    install_directory = (
+        get_install_directory()
+    )
+
+    updater_path = os.path.join(
+        install_directory,
+        UPDATER_EXE,
+    )
+
+    if not os.path.isfile(
+        updater_path
+    ):
+        print(
+            f"{UPDATER_EXE} not found. "
+            "Skipping update."
+        )
+
+        return True
+
+    current_version = (
+        get_current_version()
+    )
+
+    print(
+        f"Installed version: {current_version}"
+    )
+
+    release = get_latest_release()
+
+    if not release:
+        print(
+            "Could not check GitHub release. "
+            "Continuing without update."
+        )
+
+        return True
+
+    latest_version = (
+        get_latest_version(release)
+    )
+
+    if not latest_version:
+        print(
+            "GitHub release has no valid tag. "
+            "Continuing without update."
+        )
+
+        return True
+
+    print(
+        f"Latest version: {latest_version}"
+    )
+
+    if not update_available(
+        latest_version
+    ):
+        print(
+            "Application is up to date."
+        )
+
+        return True
+
+    print(
+        f"Update available: "
+        f"{current_version} -> "
+        f"{latest_version}"
+    )
+
+    try:
+        updater_process = subprocess.Popen(
+            [
+                updater_path,
+                "--install-update",
+            ],
+            cwd=install_directory,
+        )
+
+        print(
+            f"Updater started. PID: "
+            f"{updater_process.pid}"
+        )
+
+        return False
+
+    except Exception as error:
+        print(
+            f"Could not start updater: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        return True
+
+
+def run_update_installer():
+    root = tk.Tk()
+
+    icon_path = get_updater_icon_path()
+
+    if os.path.isfile(icon_path):
+        try:
+            root.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+    release = get_latest_release()
+
+    if not release:
+        messagebox.showerror(
+            "Updater",
+            "Could not retrieve the latest GitHub release.",
+            parent=root,
+        )
+
+        root.destroy()
+        return
+
+    latest_version = (
+        get_latest_version(release)
+    )
+
+    if not latest_version:
+        messagebox.showerror(
+            "Updater",
+            "GitHub release does not contain a valid version.",
+            parent=root,
+        )
+
+        root.destroy()
+        return
+
+    current_version = (
+        get_current_version()
+    )
+
+    window = UpdateWindow(
+        root,
+        current_version,
+        latest_version,
+    )
+
+    thread = threading.Thread(
         target=update_worker,
-        args=(window,),
+        args=(
+            window,
+            release,
+        ),
         daemon=True,
     )
 
-    worker.start()
+    thread.start()
 
-    window.root.mainloop()
+    root.mainloop()
+
+
+def main():
+    if "--install-update" in sys.argv:
+        run_update_installer()
+        return
+
+    should_continue = update_if_needed()
+
+    if should_continue is False:
+        return
+
+    install_directory = (
+        get_install_directory()
+    )
+
+    app_path = os.path.join(
+        install_directory,
+        APP_EXE,
+    )
+
+    if os.path.isfile(
+        app_path
+    ):
+        subprocess.Popen(
+            [app_path],
+            cwd=install_directory,
+        )
 
 
 if __name__ == "__main__":
-
-    try:
-        main()
-
-    except Exception:
-        pass
+    main()

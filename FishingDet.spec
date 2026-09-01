@@ -29,7 +29,12 @@ a = Analysis(
         str(PROJECT_DIR),
     ],
     binaries=[],
-    datas=[],
+    datas=[
+        (
+            str(PROJECT_DIR / "version.json"),
+            ".",
+        ),
+    ],
     hiddenimports=[
         "Main",
         "Detection",
