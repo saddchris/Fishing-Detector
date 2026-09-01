@@ -7,6 +7,7 @@ from tkinter import messagebox
 
 import Main
 import BaitManager
+import Updater
 
 from Paths import SETTINGS_DIR, ICON_FILE
 
@@ -1558,6 +1559,18 @@ class GuiOutput:
 
 
 def main():
+    try:
+        should_continue = Updater.update_if_needed()
+    except Exception as error:
+        should_continue = True
+        print(
+            f"Updater error: "
+            f"{type(error).__name__}: {error}"
+        )
+
+    if should_continue is False:
+        return
+
     root = tk.Tk()
     FishingControllerApp(root)
     root.mainloop()

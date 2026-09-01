@@ -1,7 +1,4 @@
 import gc
-import os
-import sys
-import subprocess
 import threading
 import time
 import winsound
@@ -32,7 +29,7 @@ UNKNOWN_DING_DURATION = 250
 INVENTORY_FULL_FREQUENCY = 500
 INVENTORY_FULL_DURATION = 700
 
-FISHING_STALL_TIMEOUT = 30.0
+FISHING_STALL_TIMEOUT = 20
 
 detector = None
 enabled = False
@@ -58,35 +55,6 @@ def _safe_print(message=""):
         print(message)
     except Exception:
         pass
-
-
-def _start_updater():
-    if "--updated" in sys.argv:
-        return
-
-    try:
-        application_directory = os.path.dirname(
-            os.path.abspath(sys.argv[0])
-        )
-
-        updater_path = os.path.join(
-            application_directory,
-            "Updater.exe",
-        )
-
-        if not os.path.exists(updater_path):
-            return
-
-        subprocess.Popen(
-            [updater_path],
-            cwd=application_directory,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-
-    except Exception as error:
-        _safe_print(
-            f"Updater launch error: {error}"
-        )
 
 
 def set_state_callback(callback):
@@ -1005,15 +973,6 @@ def fishing_loop(action_delay):
             elif not _should_continue():
                 break
 
-            elif (
-                get_auto_bait_enabled()
-                and _get_bait_check_allowed()
-                and _should_continue()
-            ):
-                _run_bait_check(
-                    fishing_position
-                )
-
             elif not wanted:
                 _safe_print(
                     f"IGNORED: {category} "
@@ -1298,7 +1257,6 @@ def cleanup():
 
 
 if __name__ == "__main__":
-    _start_updater()
     install_hotkeys()
 
     try:

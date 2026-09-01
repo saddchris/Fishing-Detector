@@ -7,6 +7,7 @@ import tempfile
 import subprocess
 import urllib.request
 import json
+import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -31,6 +32,12 @@ PROTECTED_CONFIG_FOLDERS = {
 PROTECTED_CONFIG_FILES = {
     "fishing_controller_settings.json",
 }
+
+
+def get_install_directory():
+    return os.path.dirname(
+        os.path.abspath(sys.argv[0])
+    )
 
 
 def get_latest_release():
@@ -86,12 +93,66 @@ def update_available(latest_version):
     )
 
 
+def update_if_needed():
+    install_directory = get_install_directory()
+
+    updater_path = os.path.join(
+        install_directory,
+        UPDATER_EXE,
+    )
+
+    if not os.path.exists(updater_path):
+        return True
+
+    try:
+        release = get_latest_release()
+
+        latest_version = release.get(
+            "tag_name",
+            "",
+        )
+
+        if not latest_version:
+            return True
+
+        if not update_available(
+            latest_version
+        ):
+            return True
+
+        subprocess.Popen(
+            [
+                updater_path,
+            ],
+        )
+
+        return False
+
+    except Exception as error:
+        print(
+            f"Could not check for updates: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        return True
+
+
 class UpdaterWindow:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("FishingDet Updater")
-        self.root.geometry("520x210")
-        self.root.resizable(False, False)
+
+        self.root.title(
+            "FishingDet Updater"
+        )
+
+        self.root.geometry(
+            "430x165"
+        )
+
+        self.root.resizable(
+            False,
+            False,
+        )
 
         self.status = tk.StringVar(
             value="Checking for updates..."
@@ -101,32 +162,44 @@ class UpdaterWindow:
             value=""
         )
 
-        self.progress = ttk.Progressbar(
+        main_frame = ttk.Frame(
             self.root,
+            padding=18,
+        )
+
+        main_frame.pack(
+            fill="both",
+            expand=True,
+        )
+
+        self.progress = ttk.Progressbar(
+            main_frame,
             orient="horizontal",
-            length=460,
+            length=390,
             mode="determinate",
         )
 
         self.progress.pack(
-            padx=30,
-            pady=(35, 10),
+            fill="x",
+            pady=(8, 12),
         )
 
         ttk.Label(
-            self.root,
+            main_frame,
             textvariable=self.status,
+            anchor="center",
         ).pack(
-            padx=30,
-            pady=5,
+            fill="x",
+            pady=2,
         )
 
         ttk.Label(
-            self.root,
+            main_frame,
             textvariable=self.file_name,
+            anchor="center",
         ).pack(
-            padx=30,
-            pady=5,
+            fill="x",
+            pady=2,
         )
 
         self.root.protocol(
@@ -138,20 +211,62 @@ class UpdaterWindow:
         pass
 
     def set_status(self, text):
-        self.status.set(text)
-        self.root.update_idletasks()
+        try:
+            self.root.after(
+                0,
+                self._set_status,
+                text,
+            )
+        except Exception:
+            pass
+
+    def _set_status(self, text):
+        try:
+            self.status.set(text)
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
 
     def set_file(self, text):
-        self.file_name.set(text)
-        self.root.update_idletasks()
+        try:
+            self.root.after(
+                0,
+                self._set_file,
+                text,
+            )
+        except Exception:
+            pass
+
+    def _set_file(self, text):
+        try:
+            self.file_name.set(text)
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
 
     def set_progress(self, value):
-        self.progress["value"] = value
-        self.root.update_idletasks()
+        try:
+            self.root.after(
+                0,
+                self._set_progress,
+                value,
+            )
+        except Exception:
+            pass
+
+    def _set_progress(self, value):
+        try:
+            self.progress["value"] = value
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
 
     def close(self):
         try:
-            self.root.destroy()
+            self.root.after(
+                0,
+                self.root.destroy,
+            )
         except Exception:
             pass
 
@@ -199,6 +314,7 @@ def download_file(
                     break
 
                 file.write(data)
+
                 downloaded += len(data)
 
                 if total_size:
@@ -233,8 +349,9 @@ def is_application_running():
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
-        return APP_EXE.lower() in (
-            processes.stdout.lower()
+        return (
+            APP_EXE.lower()
+            in processes.stdout.lower()
         )
 
     except Exception:
@@ -245,6 +362,8 @@ def close_application(window):
     window.set_status(
         "Closing FishingDet..."
     )
+
+    window.set_file("")
 
     try:
         subprocess.run(
@@ -258,19 +377,16 @@ def close_application(window):
             text=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+
     except Exception:
         pass
 
     for _ in range(60):
+
         if not is_application_running():
             return True
 
         time.sleep(0.5)
-
-        try:
-            window.root.update()
-        except Exception:
-            pass
 
     return False
 
@@ -280,16 +396,14 @@ def wait_for_application_to_close(window):
         "Waiting for FishingDet to close..."
     )
 
+    window.set_file("")
+
     for _ in range(60):
+
         if not is_application_running():
             return True
 
         time.sleep(0.5)
-
-        try:
-            window.root.update()
-        except Exception:
-            pass
 
     return False
 
@@ -305,22 +419,32 @@ def should_skip_path(relative_path):
     if not parts:
         return False
 
-    if normalized.lower() == UPDATER_EXE.lower():
+    if (
+        normalized.lower()
+        == UPDATER_EXE.lower()
+    ):
         return True
 
     if (
         len(parts) >= 2
-        and parts[0].lower() == "configuration"
+        and parts[0].lower()
+        == "configuration"
     ):
+
         if (
             parts[1].lower()
-            in PROTECTED_CONFIG_FOLDERS
+            in {
+                folder.lower()
+                for folder
+                in PROTECTED_CONFIG_FOLDERS
+            }
         ):
             return True
 
         if (
             len(parts) == 3
-            and parts[1].lower() == "settings"
+            and parts[1].lower()
+            == "settings"
             and parts[2].lower()
             in {
                 filename.lower()
@@ -333,6 +457,42 @@ def should_skip_path(relative_path):
     return False
 
 
+def safe_extract_archive(
+    archive,
+    destination,
+):
+    destination = os.path.abspath(
+        destination
+    )
+
+    for member in archive.infolist():
+
+        member_path = os.path.abspath(
+            os.path.join(
+                destination,
+                member.filename,
+            )
+        )
+
+        if (
+            os.path.commonpath(
+                [
+                    destination,
+                    member_path,
+                ]
+            )
+            != destination
+        ):
+            raise RuntimeError(
+                "The update ZIP contains "
+                "an unsafe file path."
+            )
+
+    archive.extractall(
+        destination
+    )
+
+
 def extract_update(
     zip_path,
     install_directory,
@@ -343,12 +503,15 @@ def extract_update(
     )
 
     try:
+
         with zipfile.ZipFile(
             zip_path,
             "r",
         ) as archive:
-            archive.extractall(
-                temporary_directory
+
+            safe_extract_archive(
+                archive,
+                temporary_directory,
             )
 
         extracted_items = os.listdir(
@@ -364,11 +527,14 @@ def extract_update(
                 )
             )
         ):
+
             source_directory = os.path.join(
                 temporary_directory,
                 extracted_items[0],
             )
+
         else:
+
             source_directory = (
                 temporary_directory
             )
@@ -378,6 +544,7 @@ def extract_update(
         for root, directories, filenames in os.walk(
             source_directory
         ):
+
             relative_root = os.path.relpath(
                 root,
                 source_directory,
@@ -389,6 +556,7 @@ def extract_update(
             remaining_directories = []
 
             for directory in directories:
+
                 relative_directory = os.path.join(
                     relative_root,
                     directory,
@@ -401,9 +569,12 @@ def extract_update(
                         directory
                     )
 
-            directories[:] = remaining_directories
+            directories[:] = (
+                remaining_directories
+            )
 
             for filename in filenames:
+
                 relative_file = os.path.join(
                     relative_root,
                     filename,
@@ -432,6 +603,7 @@ def extract_update(
             files,
             start=1,
         ):
+
             source = os.path.join(
                 root,
                 filename,
@@ -469,13 +641,16 @@ def extract_update(
                 index
                 / total_files
                 * 100
-            ) if total_files else 100
+                if total_files
+                else 100
+            )
 
             window.set_progress(
                 percentage
             )
 
     finally:
+
         shutil.rmtree(
             temporary_directory,
             ignore_errors=True,
@@ -490,7 +665,9 @@ def start_application(
         APP_EXE,
     )
 
-    if not os.path.exists(application):
+    if not os.path.exists(
+        application
+    ):
         return False
 
     subprocess.Popen(
@@ -517,23 +694,31 @@ def show_error(
     time.sleep(3)
 
 
-def main():
-    window = UpdaterWindow()
-
+def update_worker(
+    window,
+):
     try:
+
         window.set_status(
-            f"Current version: {CURRENT_VERSION}"
+            f"Current version: "
+            f"{CURRENT_VERSION}"
         )
 
         try:
-            release = get_latest_release()
+
+            release = (
+                get_latest_release()
+            )
 
         except Exception as error:
+
             show_error(
                 window,
-                f"Could not check for updates: {error}",
+                f"Could not check for "
+                f"updates: {error}",
             )
-            return False
+
+            return
 
         latest_version = release.get(
             "tag_name",
@@ -541,23 +726,31 @@ def main():
         )
 
         if not latest_version:
+
             show_error(
                 window,
-                "Could not determine latest version.",
+                "Could not determine "
+                "latest version.",
             )
-            return False
+
+            return
 
         window.set_status(
-            f"Latest version: {latest_version}"
+            f"Latest version: "
+            f"{latest_version}"
         )
 
         if not update_available(
             latest_version
         ):
-            window.set_progress(100)
+
+            window.set_progress(
+                100
+            )
 
             window.set_status(
-                f"Already running the latest version "
+                f"Already running the "
+                f"latest version "
                 f"({latest_version})."
             )
 
@@ -565,7 +758,9 @@ def main():
 
             time.sleep(1)
 
-            return True
+            window.close()
+
+            return
 
         assets = release.get(
             "assets",
@@ -575,6 +770,7 @@ def main():
         zip_asset = None
 
         for asset in assets:
+
             name = asset.get(
                 "name",
                 "",
@@ -583,32 +779,35 @@ def main():
             if name.lower().endswith(
                 ".zip"
             ):
+
                 zip_asset = asset
                 break
 
         if zip_asset is None:
+
             show_error(
                 window,
-                "No ZIP update was found in the GitHub release.",
+                "No ZIP update was found "
+                "in the GitHub release.",
             )
-            return False
+
+            return
 
         download_url = zip_asset.get(
             "browser_download_url"
         )
 
         if not download_url:
+
             show_error(
                 window,
-                "Release ZIP has no download URL.",
+                "Release ZIP has no "
+                "download URL.",
             )
-            return False
 
-        install_directory = os.path.dirname(
-            os.path.abspath(
-                sys.argv[0]
-            )
-        )
+            return
+
+        install_directory = get_install_directory()
 
         temporary_zip = os.path.join(
             tempfile.gettempdir(),
@@ -616,7 +815,8 @@ def main():
         )
 
         window.set_status(
-            f"Update available: {latest_version}"
+            f"Update available: "
+            f"{latest_version}"
         )
 
         window.set_file(
@@ -626,9 +826,12 @@ def main():
             )
         )
 
-        window.set_progress(0)
+        window.set_progress(
+            0
+        )
 
         try:
+
             download_file(
                 download_url,
                 temporary_zip,
@@ -636,32 +839,42 @@ def main():
             )
 
         except Exception as error:
+
             show_error(
                 window,
-                f"Download failed: {error}",
+                f"Download failed: "
+                f"{error}",
             )
-            return False
+
+            return
 
         if is_application_running():
+
             if not close_application(
                 window
             ):
+
                 show_error(
                     window,
-                    "FishingDet did not close in time.",
+                    "FishingDet did not "
+                    "close in time.",
                 )
-                return False
+
+                return
 
         if not wait_for_application_to_close(
             window
         ):
+
             show_error(
                 window,
                 "FishingDet is still running.",
             )
-            return False
+
+            return
 
         try:
+
             extract_update(
                 temporary_zip,
                 install_directory,
@@ -669,24 +882,31 @@ def main():
             )
 
         except Exception as error:
+
             show_error(
                 window,
-                f"Update installation failed: {error}",
+                f"Update installation "
+                f"failed: {error}",
             )
-            return False
+
+            return
 
         try:
+
             os.remove(
                 temporary_zip
             )
+
         except Exception:
             pass
 
-        window.set_progress(100)
+        window.set_progress(
+            100
+        )
 
         window.set_status(
-            f"Updated successfully to "
-            f"{latest_version}."
+            f"Updated successfully "
+            f"to {latest_version}."
         )
 
         window.set_file(
@@ -695,16 +915,46 @@ def main():
 
         time.sleep(1)
 
-        return start_application(
+        if not start_application(
             install_directory
+        ):
+
+            show_error(
+                window,
+                "Could not start FishingDet.",
+            )
+
+            return
+
+        window.close()
+
+    except Exception as error:
+
+        show_error(
+            window,
+            f"Updater error: {error}",
         )
 
-    finally:
-        window.close()
+
+def main():
+
+    window = UpdaterWindow()
+
+    worker = threading.Thread(
+        target=update_worker,
+        args=(window,),
+        daemon=True,
+    )
+
+    worker.start()
+
+    window.root.mainloop()
 
 
 if __name__ == "__main__":
+
     try:
         main()
+
     except Exception:
         pass
