@@ -37,11 +37,20 @@ a = Analysis(
         "BuoyDetector",
         "TextDetection",
         "WindowsInput",
+        "onnx",
+        "onnxruntime",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "torch",
+        "torch.*",
+        "torchvision",
+        "torchvision.*",
+        "torchaudio",
+        "torchaudio.*",
+    ],
     noarchive=False,
 )
 
@@ -80,8 +89,6 @@ coll = COLLECT(
 )
 
 
-# Copy the external configuration folder
-# beside the executable after COLLECT.
 SOURCE_CONFIGURATION_DIR = (
     PROJECT_DIR
     / "configuration"
@@ -97,6 +104,9 @@ if SOURCE_CONFIGURATION_DIR.exists():
     shutil.copytree(
         SOURCE_CONFIGURATION_DIR,
         DIST_CONFIGURATION_DIR,
+        ignore=shutil.ignore_patterns(
+            "*.pth"
+        ),
     )
 
 else:
@@ -107,8 +117,6 @@ else:
     )
 
 
-# Copy the assets folder
-# beside the executable after COLLECT.
 SOURCE_ASSETS_DIR = (
     PROJECT_DIR
     / "assets"

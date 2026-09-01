@@ -47,6 +47,7 @@ state_lock = threading.RLock()
 failsafe_thread = None
 state_callback = None
 exit_callback = None
+hotkey_callback = None
 
 
 def _safe_print(message=""):
@@ -68,6 +69,13 @@ def set_exit_callback(callback):
 
     with state_lock:
         exit_callback = callback
+
+
+def set_hotkey_callback(callback):
+    global hotkey_callback
+
+    with state_lock:
+        hotkey_callback = callback
 
 
 def set_auto_bait_enabled(enabled_value):
@@ -132,6 +140,20 @@ def _notify_exit_callback():
         _safe_print(f"Exit callback error: {error}")
 
 
+def _notify_hotkey_callback():
+    with state_lock:
+        callback = hotkey_callback
+
+    if callback is None:
+        _safe_print("] hotkey pressed, but no hotkey callback has been registered.")
+        return
+
+    try:
+        callback()
+    except Exception as error:
+        _safe_print(f"Hotkey callback error: {error}")
+
+
 def is_key_down(vk_code):
     try:
         return windows_is_key_down(vk_code)
@@ -180,7 +202,7 @@ def failsafe_input_loop():
 
             if right_bracket_down and not last_right_bracket:
                 _release_bait_c_key()
-                stop()
+                _notify_hotkey_callback()
 
             last_right_bracket = right_bracket_down
 
@@ -273,15 +295,6 @@ def _release_detector(det):
         pass
 
     gc.collect()
-
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    except Exception:
-        pass
 
 
 def load_values(wanted_fish, wanted_other):

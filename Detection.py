@@ -1,32 +1,33 @@
 import time
+import json
 
-from pathlib import Path
-import torch
+import numpy as np
+import onnxruntime as ort
 from PIL import Image, ImageGrab
-from torch import nn
-from torchvision import models, transforms
-
 
 from Paths import (
-    MODELS_DIR,
-    CONFIG_IMAGES_DIR,
+MODELS_DIR,
+CONFIG_IMAGES_DIR,
 )
 
-
 STAGE1_MODEL_FILE = (
-    MODELS_DIR / "stage1_model.pth"
+MODELS_DIR / "stage1_model.onnx"
 )
 
 FISH_MODEL_FILE = (
-    MODELS_DIR / "fish_model.pth"
+MODELS_DIR / "fish_model.onnx"
 )
 
 OTHER_MODEL_FILE = (
-    MODELS_DIR / "other_model.pth"
+MODELS_DIR / "other_model.onnx"
+)
+
+MODEL_CLASSES_FILE = (
+MODELS_DIR / "model_classes.json"
 )
 
 MASK_FILE = (
-    CONFIG_IMAGES_DIR / "FishingRod_Mask.png"
+CONFIG_IMAGES_DIR / "FishingRod_Mask.png"
 )
 
 IMAGE_SIZE = 224
@@ -34,13 +35,13 @@ FISH_CONFIDENCE_THRESHOLD = 40.0
 OTHER_CONFIDENCE_THRESHOLD = 40.0
 
 CROP_SIZES = {
-    "small": (0.35, 0.45),
-    "medium": (0.55, 0.65),
-    "large": (0.75, 0.85),
+"small": (0.35, 0.45),
+"medium": (0.55, 0.65),
+"large": (0.75, 0.85),
 }
 
-
 class FishDetector:
+
 
     def __init__(
         self,
@@ -56,34 +57,9 @@ class FishDetector:
             wanted_other or []
         )
 
-        self.device = torch.device("cpu")
-
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize(
-                    (
-                        IMAGE_SIZE,
-                        IMAGE_SIZE,
-                    )
-                ),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[
-                        0.485,
-                        0.456,
-                        0.406,
-                    ],
-                    std=[
-                        0.229,
-                        0.224,
-                        0.225,
-                    ],
-                ),
-            ]
-        )
+        self.device = "CPUExecutionProvider"
 
         try:
-
             self.mask = Image.open(
                 MASK_FILE
             ).convert(
@@ -99,12 +75,18 @@ class FishDetector:
 
         self.stage1_model = None
         self.stage1_classes = None
+        self.stage1_input_name = None
+        self.stage1_output_name = None
 
         self.fish_model = None
         self.fish_classes = None
+        self.fish_input_name = None
+        self.fish_output_name = None
 
         self.other_model = None
         self.other_classes = None
+        self.other_input_name = None
+        self.other_output_name = None
 
         self.models_loaded = False
 
@@ -147,72 +129,111 @@ class FishDetector:
     def load_model(
         self,
         model_file,
+        model_name,
+        model_classes,
     ):
 
         print(
             f"Loading model: {model_file}"
         )
 
-        checkpoint = torch.load(
-            model_file,
-            map_location=self.device,
+        if not model_file.exists():
+
+            raise FileNotFoundError(
+                f"Model file not found: "
+                f"'{model_file}'"
+            )
+
+        classes = list(
+            model_classes.get(
+                model_name,
+                [],
+            )
         )
+
+        if not classes:
+
+            raise RuntimeError(
+                f"No classes found for "
+                f"'{model_name}' in "
+                f"'{MODEL_CLASSES_FILE}'."
+            )
 
         try:
 
-            classes = list(
-                checkpoint.get(
-                    "classes",
-                    [],
+            session = (
+                ort.InferenceSession(
+                    str(model_file),
+                    providers=[
+                        self.device
+                    ],
                 )
             )
 
-            state_dict = checkpoint.get(
-                "model_state"
+        except Exception as error:
+
+            raise RuntimeError(
+                f"Could not load ONNX model "
+                f"'{model_file}': {error}"
+            ) from error
+
+        inputs = session.get_inputs()
+
+        if len(inputs) != 1:
+
+            raise RuntimeError(
+                f"Model '{model_file}' must "
+                "have exactly one input."
             )
 
-            if not classes:
+        input_name = inputs[0].name
 
-                raise RuntimeError(
-                    f"Model '{model_file}' "
-                    "contains no classes."
-                )
+        outputs = session.get_outputs()
 
-            if state_dict is None:
+        if len(outputs) != 1:
 
-                raise RuntimeError(
-                    f"Model '{model_file}' "
-                    "does not contain "
-                    "'model_state'."
-                )
-
-            model = models.resnet18(
-                weights=None
+            raise RuntimeError(
+                f"Model '{model_file}' must "
+                "have exactly one output."
             )
 
-            model.fc = nn.Linear(
-                model.fc.in_features,
-                len(classes),
+        output_name = outputs[0].name
+        output_shape = outputs[0].shape
+
+        if len(output_shape) != 2:
+
+            raise RuntimeError(
+                f"Model '{model_file}' has "
+                f"unexpected output shape: "
+                f"{output_shape}"
             )
 
-            model.load_state_dict(
-                state_dict
+        output_class_count = (
+            output_shape[1]
+        )
+
+        if (
+            isinstance(
+                output_class_count,
+                int,
+            )
+            and output_class_count
+            != len(classes)
+        ):
+
+            raise RuntimeError(
+                f"Class count mismatch for "
+                f"'{model_file}'. "
+                f"Model output: {output_shape}, "
+                f"classes: {len(classes)}"
             )
 
-            model.to(
-                self.device
-            )
-
-            model.eval()
-
-            return (
-                model,
-                classes,
-            )
-
-        finally:
-
-            del checkpoint
+        return (
+            session,
+            classes,
+            input_name,
+            output_name,
+        )
 
     def unload_models(
         self,
@@ -220,18 +241,20 @@ class FishDetector:
 
         self.stage1_model = None
         self.stage1_classes = None
+        self.stage1_input_name = None
+        self.stage1_output_name = None
 
         self.fish_model = None
         self.fish_classes = None
+        self.fish_input_name = None
+        self.fish_output_name = None
 
         self.other_model = None
         self.other_classes = None
+        self.other_input_name = None
+        self.other_output_name = None
 
         self.models_loaded = False
-
-        if torch.cuda.is_available():
-
-            torch.cuda.empty_cache()
 
     def set_targets(
         self,
@@ -297,27 +320,65 @@ class FishDetector:
         self.wanted_fish = fish_targets
         self.wanted_other = other_targets
 
+        if not MODEL_CLASSES_FILE.exists():
+
+            raise FileNotFoundError(
+                f"Model classes file not found: "
+                f"'{MODEL_CLASSES_FILE}'"
+            )
+
+        try:
+
+            with open(
+                MODEL_CLASSES_FILE,
+                "r",
+                encoding="utf-8",
+            ) as file:
+
+                model_classes = json.load(
+                    file
+                )
+
+        except Exception as error:
+
+            raise RuntimeError(
+                f"Could not load model classes "
+                f"'{MODEL_CLASSES_FILE}': {error}"
+            ) from error
+
         try:
 
             (
                 self.stage1_model,
                 self.stage1_classes,
+                self.stage1_input_name,
+                self.stage1_output_name,
             ) = self.load_model(
-                STAGE1_MODEL_FILE
+                STAGE1_MODEL_FILE,
+                "stage1_model",
+                model_classes,
             )
 
             (
                 self.fish_model,
                 self.fish_classes,
+                self.fish_input_name,
+                self.fish_output_name,
             ) = self.load_model(
-                FISH_MODEL_FILE
+                FISH_MODEL_FILE,
+                "fish_model",
+                model_classes,
             )
 
             (
                 self.other_model,
                 self.other_classes,
+                self.other_input_name,
+                self.other_output_name,
             ) = self.load_model(
-                OTHER_MODEL_FILE
+                OTHER_MODEL_FILE,
+                "other_model",
+                model_classes,
             )
 
             invalid_fish = (
@@ -329,7 +390,7 @@ class FishDetector:
 
                 raise ValueError(
                     "Selected fish are not "
-                    "present in fish_model.pth: "
+                    "present in fish_model: "
                     f"{sorted(invalid_fish)}"
                 )
 
@@ -343,7 +404,7 @@ class FishDetector:
                 raise ValueError(
                     "Selected other targets "
                     "are not present in "
-                    "other_model.pth: "
+                    "other_model: "
                     f"{sorted(invalid_other)}"
                 )
 
@@ -429,11 +490,101 @@ class FishDetector:
             )
         )
 
+    def _prepare_image(
+        self,
+        image,
+    ):
+
+        image = image.convert(
+            "RGB"
+        )
+
+        image = image.resize(
+            (
+                IMAGE_SIZE,
+                IMAGE_SIZE,
+            ),
+            Image.Resampling.BILINEAR,
+        )
+
+        array = np.asarray(
+            image,
+            dtype=np.float32,
+        )
+
+        array /= 255.0
+
+        mean = np.array(
+            [
+                0.485,
+                0.456,
+                0.406,
+            ],
+            dtype=np.float32,
+        )
+
+        std = np.array(
+            [
+                0.229,
+                0.224,
+                0.225,
+            ],
+            dtype=np.float32,
+        )
+
+        array = (
+            array - mean
+        ) / std
+
+        array = np.transpose(
+            array,
+            (
+                2,
+                0,
+                1,
+            ),
+        )
+
+        return array
+
+    @staticmethod
+    def _softmax(
+        values,
+    ):
+
+        values = np.asarray(
+            values,
+            dtype=np.float32,
+        )
+
+        values = (
+            values
+            - np.max(
+                values,
+                axis=1,
+                keepdims=True,
+            )
+        )
+
+        exponential = np.exp(
+            values
+        )
+
+        return (
+            exponential
+            / exponential.sum(
+                axis=1,
+                keepdims=True,
+            )
+        )
+
     def _predict_batch(
         self,
         images,
         model,
         classes,
+        input_name,
+        output_name,
     ):
 
         if model is None:
@@ -450,46 +601,78 @@ class FishDetector:
                 "with no classes."
             )
 
-        tensors = torch.stack(
+        if not images:
+
+            raise RuntimeError(
+                "Prediction requested "
+                "with no images."
+            )
+
+        tensors = np.stack(
             [
-                self.transform(image)
+                self._prepare_image(
+                    image
+                )
                 for image in images
             ]
+        ).astype(
+            np.float32
         )
 
-        tensors = tensors.to(
-            self.device,
-            non_blocking=(
-                self.device.type == "cuda"
-            ),
+        outputs = model.run(
+            [output_name],
+            {
+                input_name: tensors
+            },
         )
 
-        with torch.inference_mode():
+        logits = np.asarray(
+            outputs[0],
+            dtype=np.float32,
+        )
 
-            probabilities = (
-                torch.softmax(
-                    model(tensors),
-                    dim=1,
-                )
+        if (
+            logits.ndim != 2
+            or logits.shape[1]
+            != len(classes)
+        ):
+
+            raise RuntimeError(
+                "ONNX output shape does "
+                "not match class count. "
+                f"Output shape: {logits.shape}, "
+                f"classes: {len(classes)}"
             )
 
-        confidences, predicted = (
-            torch.max(
-                probabilities,
-                dim=1,
+        probabilities = (
+            self._softmax(
+                logits
             )
+        )
+
+        predicted = np.argmax(
+            probabilities,
+            axis=1,
+        )
+
+        confidences = (
+            probabilities[
+                np.arange(
+                    len(predicted)
+                ),
+                predicted,
+            ]
+            * 100.0
         )
 
         categories = [
             classes[index]
-            for index in predicted.tolist()
+            for index in predicted
         ]
 
         return (
             categories,
-            confidences.mul(
-                100.0
-            ),
+            confidences,
             probabilities,
         )
 
@@ -498,6 +681,8 @@ class FishDetector:
         image,
         model,
         classes,
+        input_name,
+        output_name,
     ):
 
         (
@@ -508,11 +693,15 @@ class FishDetector:
             [image],
             model,
             classes,
+            input_name,
+            output_name,
         )
 
         return (
             categories[0],
-            confidences[0].item(),
+            float(
+                confidences[0]
+            ),
             probabilities[0],
         )
 
@@ -543,31 +732,35 @@ class FishDetector:
             crops,
             self.stage1_model,
             self.stage1_classes,
+            self.stage1_input_name,
+            self.stage1_output_name,
         )
 
         average_probabilities = (
             probabilities.mean(
-                dim=0
+                axis=0
             )
         )
 
-        (
-            ensemble_confidence,
-            ensemble_index,
-        ) = torch.max(
-            average_probabilities,
-            dim=0,
+        ensemble_index = int(
+            np.argmax(
+                average_probabilities
+            )
+        )
+
+        ensemble_confidence = (
+            float(
+                average_probabilities[
+                    ensemble_index
+                ]
+            )
+            * 100.0
         )
 
         ensemble_category = (
             self.stage1_classes[
-                ensemble_index.item()
+                ensemble_index
             ]
-        )
-
-        ensemble_confidence = (
-            ensemble_confidence.item()
-            * 100.0
         )
 
         return (
@@ -591,30 +784,34 @@ class FishDetector:
             images,
             self.fish_model,
             self.fish_classes,
+            self.fish_input_name,
+            self.fish_output_name,
         )
 
         average_probabilities = (
             probabilities.mean(
-                dim=0
+                axis=0
             )
         )
 
-        (
-            confidence,
-            predicted,
-        ) = torch.max(
-            average_probabilities,
-            dim=0,
+        predicted = int(
+            np.argmax(
+                average_probabilities
+            )
+        )
+
+        confidence = (
+            float(
+                average_probabilities[
+                    predicted
+                ]
+            )
+            * 100.0
         )
 
         category = self.fish_classes[
-            predicted.item()
+            predicted
         ]
-
-        confidence = (
-            confidence.item()
-            * 100.0
-        )
 
         if (
             confidence
@@ -646,30 +843,34 @@ class FishDetector:
             images,
             self.other_model,
             self.other_classes,
+            self.other_input_name,
+            self.other_output_name,
         )
 
         average_probabilities = (
             probabilities.mean(
-                dim=0
+                axis=0
             )
         )
 
-        (
-            confidence,
-            predicted,
-        ) = torch.max(
-            average_probabilities,
-            dim=0,
+        predicted = int(
+            np.argmax(
+                average_probabilities
+            )
+        )
+
+        confidence = (
+            float(
+                average_probabilities[
+                    predicted
+                ]
+            )
+            * 100.0
         )
 
         category = self.other_classes[
-            predicted.item()
+            predicted
         ]
-
-        confidence = (
-            confidence.item()
-            * 100.0
-        )
 
         if (
             confidence

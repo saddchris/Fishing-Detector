@@ -104,12 +104,15 @@ class FishingControllerApp:
 
         Main.set_state_callback(self.main_state_changed)
         Main.set_exit_callback(self.close_gui_from_main)
+        Main.set_hotkey_callback(self.hotkey_pressed)
 
         Main.install_hotkeys()
 
         self._log("Fishing Controller started.\n")
         self._log(f"Found {len(FISH_TARGETS)} fish classes.\n")
         self._log(f"Found {len(OTHER_TARGETS)} other classes.\n")
+        self._log("Hotkey: ] = Start / Stop\n")
+        self._log("Hotkey: ESC = Exit\n")
 
         self.root.protocol("WM_DELETE_WINDOW", self.close_gui)
 
@@ -1311,6 +1314,56 @@ class FishingControllerApp:
                 "START CANCELLED.\n"
             )
 
+    def _handle_hotkey(self):
+        if self.gui_closing:
+            return
+
+        if self.load_in_progress:
+            self._log(
+                "] ignored while models are loading.\n"
+            )
+            return
+
+        if self.countdown_running:
+            self.stop_fishing()
+            return
+
+        if (
+            Main.is_worker_running()
+            or getattr(
+                Main,
+                "enabled",
+                False,
+            )
+        ):
+            self.stop_fishing()
+            return
+
+        self.start_fishing()
+
+    def hotkey_pressed(self):
+        if self.gui_closing:
+            return
+
+        try:
+            self.root.after(
+                0,
+                self._handle_hotkey,
+            )
+        except tk.TclError:
+            pass
+
+    def stop_fishing(self):
+        if self.gui_closing:
+            return
+
+        if self.countdown_running:
+            self.cancel_countdown()
+
+        Main.stop()
+
+        self._fishing_stopped()
+
     def _fishing_started(self):
         if self.gui_closing:
             return
@@ -1325,17 +1378,6 @@ class FishingControllerApp:
         self.stop_button.config(state="normal")
 
         self._set_controls(False)
-
-    def stop_fishing(self):
-        if self.gui_closing:
-            return
-
-        if self.countdown_running:
-            self.cancel_countdown()
-
-        Main.stop()
-
-        self._fishing_stopped()
 
     def _fishing_stopped(self):
         if self.gui_closing:
