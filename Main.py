@@ -18,18 +18,17 @@ from WindowsInput import (
     send_scan_code,
 )
 
-ESCAPE_KEY = "esc"
 VK_ESCAPE = 0x1B
 VK_RIGHT_BRACKET = 0xDD
 SCAN_E = 0x12
 SCAN_R = 0x13
 
-UNKNOWN_DING_FREQUENCY = 1000
+UNKNOWN_DING_FREQUENCY = 100
 UNKNOWN_DING_DURATION = 250
 INVENTORY_FULL_FREQUENCY = 500
 INVENTORY_FULL_DURATION = 700
 
-FISHING_STALL_TIMEOUT = 20
+FISHING_STALL_TIMEOUT = 10
 
 detector = None
 enabled = False
@@ -39,6 +38,7 @@ values_loaded = False
 auto_bait_enabled = False
 bait_check_allowed = True
 bait_inventory_scan_exhausted = False
+bait_equipped = False
 
 fishing_thread = None
 stop_event = threading.Event()
@@ -82,6 +82,7 @@ def set_auto_bait_enabled(enabled_value):
     global auto_bait_enabled
     global bait_check_allowed
     global bait_inventory_scan_exhausted
+    global bait_equipped
 
     with state_lock:
         auto_bait_enabled = bool(enabled_value)
@@ -92,11 +93,24 @@ def set_auto_bait_enabled(enabled_value):
         else:
             bait_check_allowed = False
             bait_inventory_scan_exhausted = False
+            bait_equipped = False
 
 
 def get_auto_bait_enabled():
     with state_lock:
         return auto_bait_enabled
+
+
+def _set_bait_equipped(value):
+    global bait_equipped
+
+    with state_lock:
+        bait_equipped = bool(value)
+
+
+def get_bait_equipped():
+    with state_lock:
+        return bait_equipped
 
 
 BAIT_TRIGGER_FISH = {
@@ -477,9 +491,10 @@ def release_all_mouse():
     right_mouse_held = False
 
 
-def wait_for_buoy(continue_check):
+def wait_for_buoy(continue_check, bait_equipped=False):
     return wait_for_buoy_original(
-        continue_check
+        continue_check,
+        bait_equipped=bait_equipped,
     )
 
 
@@ -551,6 +566,8 @@ def _run_bait_check(
 
         _mark_bait_search_result()
 
+        _set_bait_equipped(result)
+
         return result
 
     except Exception as error:
@@ -560,6 +577,8 @@ def _run_bait_check(
         )
 
         _release_bait_c_key()
+
+        _set_bait_equipped(False)
 
         try:
             pyautogui.moveTo(
@@ -755,7 +774,8 @@ def _wait_for_buoy_with_watchdog(
         return True
 
     result = wait_for_buoy(
-        watchdog_continue_check
+        watchdog_continue_check,
+        bait_equipped=get_bait_equipped(),
     )
 
     if timed_out:
@@ -1002,6 +1022,7 @@ def fishing_loop(action_delay):
 
                 if check_bait:
                     _reset_bait_inventory_scan()
+                    _set_bait_equipped(False)
 
                 if pickup_and_check_inventory(
                     check_bait
@@ -1123,6 +1144,8 @@ def start_fishing_worker(action_delay):
         _set_bait_inventory_scan_exhausted(
             False
         )
+
+        _set_bait_equipped(False)
 
         enabled = True
 

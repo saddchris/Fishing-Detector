@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from PIL import Image, ImageFile
 from torch import nn, optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import models, transforms
 
 
@@ -28,6 +28,7 @@ USE_RAM_IMAGE_CACHE = False
 BATCH_SIZE = 16
 RANDOM_SEED = 42
 GRADIENT_CLIP_VALUE = 1.0
+DROPOUT_RATE = 0.2
 
 MODEL_NAME = "resnet18"
 TUNING_RESULTS_FILE = "tuning_results.json"
@@ -40,6 +41,9 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_MIXED_PRECISION = torch.cuda.is_available()
+
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -177,24 +181,18 @@ def build_stage1_dataset(root):
     fish_dir = root / "fish"
 
     if fish_dir.exists():
-        data["fish"].extend(
-            get_images(fish_dir)
-        )
+        data["fish"].extend(get_images(fish_dir))
 
     no_fish_dir = root / "no_fish"
 
     if no_fish_dir.exists():
-        data["no_fish"].extend(
-            get_images(no_fish_dir)
-        )
+        data["no_fish"].extend(get_images(no_fish_dir))
 
     for class_name in STAGE3_OTHER_CLASSES:
         class_dir = root / class_name
 
         if class_dir.exists():
-            data["other"].extend(
-                get_images(class_dir)
-            )
+            data["other"].extend(get_images(class_dir))
 
     data = {
         class_name: images
@@ -242,20 +240,54 @@ def build_other_dataset(root):
 
 
 def print_class_counts(samples, classes):
-    counts = {
-        class_name: 0
-        for class_name in classes
-    }
+    counts = {class_name: 0 for class_name in classes}
 
     for _, label in samples:
         class_name = classes[label]
         counts[class_name] += 1
 
     for class_name in classes:
-        print(
-            f"  {class_name:25s}: "
-            f"{counts[class_name]:6d}"
-        )
+        print(f"  {class_name:25s}: {counts[class_name]:6d}")
+
+
+def compute_class_counts(samples, classes):
+    counts = {class_name: 0 for class_name in classes}
+
+    for _, label in samples:
+        counts[classes[label]] += 1
+
+    return counts
+
+
+def compute_class_weights(samples, classes):
+    counts = compute_class_counts(samples, classes)
+    total = sum(counts.values())
+
+    weights = []
+
+    for class_name in classes:
+        count = counts[class_name]
+
+        if count > 0:
+            weights.append(total / (len(classes) * count))
+        else:
+            weights.append(0.0)
+
+    return torch.tensor(weights, dtype=torch.float32)
+
+
+def build_sample_weights(samples, classes):
+    counts = compute_class_counts(samples, classes)
+
+    weights = []
+
+    for _, label in samples:
+        class_name = classes[label]
+        count = counts[class_name]
+
+        weights.append(1.0 / count if count > 0 else 0.0)
+
+    return torch.tensor(weights, dtype=torch.double)
 
 
 def create_train_transform(image_size):
@@ -286,12 +318,8 @@ def create_train_transform(image_size):
 def create_validation_transform(image_size):
     return transforms.Compose(
         [
-            transforms.Resize(
-                image_size
-            ),
-            transforms.CenterCrop(
-                image_size
-            ),
+            transforms.Resize(image_size),
+            transforms.CenterCrop(image_size),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=IMAGENET_MEAN,
@@ -301,23 +329,22 @@ def create_validation_transform(image_size):
     )
 
 
-def create_dataloader(dataset, shuffle):
-    worker_count = max(
-        0,
-        NUM_WORKERS
-    )
+def create_dataloader(dataset, shuffle, sampler=None):
+    worker_count = max(0, NUM_WORKERS)
 
     kwargs = {
         "dataset": dataset,
         "batch_size": BATCH_SIZE,
-        "shuffle": shuffle,
         "num_workers": worker_count,
-        "pin_memory": (
-            PIN_MEMORY
-            and torch.cuda.is_available()
-        ),
+        "pin_memory": PIN_MEMORY and torch.cuda.is_available(),
         "drop_last": False,
     }
+
+    if sampler is not None:
+        kwargs["sampler"] = sampler
+        kwargs["shuffle"] = False
+    else:
+        kwargs["shuffle"] = shuffle
 
     if worker_count > 0:
         kwargs["prefetch_factor"] = PREFETCH_FACTOR
@@ -328,23 +355,17 @@ def create_dataloader(dataset, shuffle):
 
 def create_model(number_of_classes):
     if MODEL_NAME == "resnet18":
-        model = models.resnet18(
-            weights=models.ResNet18_Weights.DEFAULT
-        )
+        model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
 
     elif MODEL_NAME == "resnet34":
-        model = models.resnet34(
-            weights=models.ResNet34_Weights.DEFAULT
-        )
+        model = models.resnet34(weights=models.ResNet34_Weights.DEFAULT)
 
     else:
-        raise ValueError(
-            f"Unsupported model: {MODEL_NAME}"
-        )
+        raise ValueError(f"Unsupported model: {MODEL_NAME}")
 
-    model.fc = nn.Linear(
-        model.fc.in_features,
-        number_of_classes,
+    model.fc = nn.Sequential(
+        nn.Dropout(p=DROPOUT_RATE),
+        nn.Linear(model.fc.in_features, number_of_classes),
     )
 
     model = model.to(device)
@@ -365,12 +386,7 @@ def unfreeze_backbone(model):
         parameter.requires_grad = True
 
 
-def create_optimizer(
-    model,
-    learning_rate,
-    backbone_lr_multiplier,
-    weight_decay,
-):
+def create_optimizer(model, learning_rate, backbone_lr_multiplier, weight_decay):
     backbone_parameters = []
     head_parameters = []
 
@@ -391,10 +407,7 @@ def create_optimizer(
         parameter_groups.append(
             {
                 "params": backbone_parameters,
-                "lr": (
-                    learning_rate
-                    * backbone_lr_multiplier
-                ),
+                "lr": learning_rate * backbone_lr_multiplier,
             }
         )
 
@@ -406,162 +419,91 @@ def create_optimizer(
             }
         )
 
-    return optim.AdamW(
-        parameter_groups,
-        weight_decay=weight_decay,
-    )
+    return optim.AdamW(parameter_groups, weight_decay=weight_decay)
 
 
-def evaluate_model(
-    model,
-    data_loader,
-    classes,
-    criterion,
-):
+def evaluate_model(model, data_loader, classes, criterion):
     model.eval()
 
     total = 0
     correct = 0
     total_loss = 0.0
 
-    class_correct = {
-        class_name: 0
-        for class_name in classes
-    }
-
-    class_total = {
-        class_name: 0
-        for class_name in classes
-    }
+    class_correct = {class_name: 0 for class_name in classes}
+    class_total = {class_name: 0 for class_name in classes}
 
     with torch.inference_mode():
 
         for images, labels in data_loader:
 
-            images = images.to(
-                device,
-                non_blocking=True,
-            )
-
-            labels = labels.to(
-                device,
-                non_blocking=True,
-            )
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
             if USE_MIXED_PRECISION:
 
-                with torch.autocast(
-                    device_type="cuda",
-                    dtype=torch.float16,
-                ):
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
                     outputs = model(images)
-
-                    loss = criterion(
-                        outputs,
-                        labels,
-                    )
+                    loss = criterion(outputs, labels)
 
             else:
 
                 outputs = model(images)
+                loss = criterion(outputs, labels)
 
-                loss = criterion(
-                    outputs,
-                    labels,
-                )
+            total_loss += loss.item() * labels.size(0)
 
-            total_loss += (
-                loss.item()
-                * labels.size(0)
-            )
-
-            _, predicted = torch.max(
-                outputs,
-                1,
-            )
+            _, predicted = torch.max(outputs, 1)
 
             total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
-            correct += (
-                predicted == labels
-            ).sum().item()
+            for label, prediction in zip(labels, predicted):
 
-            for label, prediction in zip(
-                labels,
-                predicted,
-            ):
+                class_name = classes[label.item()]
+                class_total[class_name] += 1
 
-                class_name = classes[
-                    label.item()
-                ]
+                if prediction.item() == label.item():
+                    class_correct[class_name] += 1
 
-                class_total[
-                    class_name
-                ] += 1
-
-                if (
-                    prediction.item()
-                    == label.item()
-                ):
-                    class_correct[
-                        class_name
-                    ] += 1
-
-    accuracy = (
-        100 * correct / total
-        if total > 0
-        else 0
-    )
-
-    average_loss = (
-        total_loss / total
-        if total > 0
-        else 0
-    )
+    accuracy = 100 * correct / total if total > 0 else 0
+    average_loss = total_loss / total if total > 0 else 0
 
     class_accuracy = {}
 
     for class_name in classes:
 
         if class_total[class_name] > 0:
-
             class_accuracy[class_name] = (
-                100
-                * class_correct[class_name]
-                / class_total[class_name]
+                100 * class_correct[class_name] / class_total[class_name]
             )
-
         else:
-
             class_accuracy[class_name] = 0
 
-    return (
-        accuracy,
-        average_loss,
-        class_accuracy,
+    valid_accuracies = [
+        class_accuracy[class_name]
+        for class_name in classes
+        if class_total[class_name] > 0
+    ]
+
+    balanced_accuracy = (
+        sum(valid_accuracies) / len(valid_accuracies)
+        if valid_accuracies
+        else 0
     )
+
+    return accuracy, average_loss, class_accuracy, balanced_accuracy
 
 
 def sample_hyperparameters(search_space):
-    return {
-        name: random.choice(values)
-        for name, values in search_space.items()
-    }
+    return {name: random.choice(values) for name, values in search_space.items()}
 
 
-def create_scheduler(
-    optimizer,
-    scheduler_type,
-    remaining_epochs,
-):
+def create_scheduler(optimizer, scheduler_type, remaining_epochs):
     if scheduler_type == "cosine":
 
         return optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=max(
-                1,
-                remaining_epochs,
-            ),
+            T_max=max(1, remaining_epochs),
             eta_min=1e-6,
         )
 
@@ -575,18 +517,10 @@ def create_scheduler(
             min_lr=1e-6,
         )
 
-    raise ValueError(
-        f"Unknown scheduler: {scheduler_type}"
-    )
+    raise ValueError(f"Unknown scheduler: {scheduler_type}")
 
 
-def train_one_epoch(
-    model,
-    loader,
-    criterion,
-    optimizer,
-    scaler,
-):
+def train_one_epoch(model, loader, criterion, optimizer, scaler):
     model.train()
 
     running_loss = 0.0
@@ -595,103 +529,54 @@ def train_one_epoch(
 
     for images, labels in loader:
 
-        images = images.to(
-            device,
-            non_blocking=True,
-        )
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        labels = labels.to(
-            device,
-            non_blocking=True,
-        )
-
-        optimizer.zero_grad(
-            set_to_none=True
-        )
+        optimizer.zero_grad(set_to_none=True)
 
         if USE_MIXED_PRECISION:
 
-            with torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16,
-            ):
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
                 outputs = model(images)
-
-                loss = criterion(
-                    outputs,
-                    labels,
-                )
+                loss = criterion(outputs, labels)
 
             scaler.scale(loss).backward()
-
             scaler.unscale_(optimizer)
 
             torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                GRADIENT_CLIP_VALUE,
+                model.parameters(), GRADIENT_CLIP_VALUE
             )
 
             scaler.step(optimizer)
-
             scaler.update()
 
         else:
 
             outputs = model(images)
-
-            loss = criterion(
-                outputs,
-                labels,
-            )
-
+            loss = criterion(outputs, labels)
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                GRADIENT_CLIP_VALUE,
+                model.parameters(), GRADIENT_CLIP_VALUE
             )
 
             optimizer.step()
 
-        running_loss += (
-            loss.item()
-            * labels.size(0)
-        )
+        running_loss += loss.item() * labels.size(0)
 
-        _, predicted = torch.max(
-            outputs,
-            1,
-        )
+        _, predicted = torch.max(outputs, 1)
 
         total += labels.size(0)
+        correct += (predicted == labels).sum().item()
 
-        correct += (
-            predicted == labels
-        ).sum().item()
+    average_loss = running_loss / total if total > 0 else 0
+    accuracy = 100 * correct / total if total > 0 else 0
 
-    average_loss = (
-        running_loss / total
-        if total > 0
-        else 0
-    )
-
-    accuracy = (
-        100 * correct / total
-        if total > 0
-        else 0
-    )
-
-    return (
-        average_loss,
-        accuracy,
-    )
+    return average_loss, accuracy
 
 
 def move_state_to_cpu(state):
-    return {
-        key: value.detach().cpu().clone()
-        for key, value in state.items()
-    }
+    return {key: value.detach().cpu().clone() for key, value in state.items()}
 
 
 def cleanup_model(model):
@@ -718,434 +603,313 @@ def train_trial(
     validation_samples,
     validation_classes,
 ):
-    print(
-        f"\n{'#' * 70}"
-    )
-
-    print(
-        f"STAGE {stage_number} "
-        f"- TRIAL {trial_number}"
-    )
-
-    print(
-        f"{'#' * 70}\n"
-    )
+    print(f"\n{'#' * 70}")
+    print(f"STAGE {stage_number} - TRIAL {trial_number}")
+    print(f"{'#' * 70}\n")
 
     print("Hyperparameters:")
 
     for name, value in hyperparameters.items():
-        print(
-            f"  {name}: {value}"
-        )
+        print(f"  {name}: {value}")
 
     start_time = time.time()
 
-    image_size = hyperparameters[
-        "image_size"
-    ]
-
-    learning_rate = hyperparameters[
-        "learning_rate"
-    ]
-
-    weight_decay = hyperparameters[
-        "weight_decay"
-    ]
-
-    label_smoothing = hyperparameters[
-        "label_smoothing"
-    ]
-
-    backbone_lr_multiplier = hyperparameters[
-        "backbone_lr_multiplier"
-    ]
-
-    head_only_epochs = hyperparameters[
-        "head_only_epochs"
-    ]
-
-    scheduler_type = hyperparameters[
-        "scheduler"
-    ]
+    image_size = hyperparameters["image_size"]
+    learning_rate = hyperparameters["learning_rate"]
+    weight_decay = hyperparameters["weight_decay"]
+    label_smoothing = hyperparameters["label_smoothing"]
+    backbone_lr_multiplier = hyperparameters["backbone_lr_multiplier"]
+    head_only_epochs = hyperparameters["head_only_epochs"]
+    scheduler_type = hyperparameters["scheduler"]
 
     train_dataset = ImageListDataset(
         train_samples,
         train_classes,
-        transform=create_train_transform(
-            image_size
-        ),
+        transform=create_train_transform(image_size),
     )
 
     validation_dataset = ImageListDataset(
         validation_samples,
         validation_classes,
-        transform=create_validation_transform(
-            image_size
-        ),
+        transform=create_validation_transform(image_size),
+    )
+
+    sample_weights = build_sample_weights(train_samples, train_classes)
+
+    train_sampler = WeightedRandomSampler(
+        sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
     )
 
     train_loader = create_dataloader(
-        train_dataset,
-        shuffle=True,
+        train_dataset, shuffle=False, sampler=train_sampler
     )
 
-    validation_loader = create_dataloader(
-        validation_dataset,
-        shuffle=False,
-    )
+    validation_loader = create_dataloader(validation_dataset, shuffle=False)
 
-    model = create_model(
-        len(train_classes)
-    )
+    model = create_model(len(train_classes))
+
+    class_weights = compute_class_weights(
+        train_samples, train_classes
+    ).to(device)
 
     criterion = nn.CrossEntropyLoss(
-        label_smoothing=label_smoothing
+        weight=class_weights, label_smoothing=label_smoothing
     )
 
-    scaler = (
-        torch.amp.GradScaler("cuda")
-        if USE_MIXED_PRECISION
-        else None
-    )
+    eval_criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    scaler = torch.amp.GradScaler("cuda") if USE_MIXED_PRECISION else None
 
     if head_only_epochs > 0:
 
-        print(
-            f"\nHead-only phase: "
-            f"{head_only_epochs} epochs"
-        )
+        print(f"\nHead-only phase: {head_only_epochs} epochs")
 
         freeze_backbone(model)
 
         optimizer = create_optimizer(
-            model,
-            learning_rate,
-            backbone_lr_multiplier,
-            weight_decay,
+            model, learning_rate, backbone_lr_multiplier, weight_decay
         )
 
-        head_scheduler = (
-            optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=max(
-                    1,
-                    head_only_epochs,
-                ),
-                eta_min=(
-                    learning_rate * 0.1
-                ),
-            )
+        head_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, head_only_epochs),
+            eta_min=learning_rate * 0.1,
         )
 
-        for epoch in range(
-            head_only_epochs
-        ):
+        for epoch in range(head_only_epochs):
 
-            train_loss, train_accuracy = (
-                train_one_epoch(
-                    model,
-                    train_loader,
-                    criterion,
-                    optimizer,
-                    scaler,
-                )
+            train_loss, train_accuracy = train_one_epoch(
+                model, train_loader, criterion, optimizer, scaler
             )
 
             head_scheduler.step()
 
             print(
-                f"Head epoch "
-                f"{epoch + 1:2}/"
-                f"{head_only_epochs} | "
-                f"Loss {train_loss:.4f} | "
-                f"Train "
-                f"{train_accuracy:5.1f}%"
+                f"Head epoch {epoch + 1:2}/{head_only_epochs} | "
+                f"Loss {train_loss:.4f} | Train {train_accuracy:5.1f}%"
             )
 
-    print(
-        f"\nUnfreezing entire "
-        f"{MODEL_NAME}..."
-    )
+    print(f"\nUnfreezing entire {MODEL_NAME}...")
 
     unfreeze_backbone(model)
 
     optimizer = create_optimizer(
-        model,
-        learning_rate,
-        backbone_lr_multiplier,
-        weight_decay,
+        model, learning_rate, backbone_lr_multiplier, weight_decay
     )
 
-    remaining_epochs = max(
-        1,
-        MAX_EPOCHS - head_only_epochs,
-    )
+    remaining_epochs = max(1, MAX_EPOCHS - head_only_epochs)
 
-    scheduler = create_scheduler(
-        optimizer,
-        scheduler_type,
-        remaining_epochs,
-    )
+    scheduler = create_scheduler(optimizer, scheduler_type, remaining_epochs)
 
     best_validation_accuracy = 0.0
+    best_validation_balanced_accuracy = 0.0
     best_validation_loss = float("inf")
     best_epoch = 0
     epochs_without_improvement = 0
     best_state = None
 
-    for epoch in range(
-        remaining_epochs
-    ):
+    for epoch in range(remaining_epochs):
 
-        actual_epoch = (
-            head_only_epochs
-            + epoch
-            + 1
-        )
+        actual_epoch = head_only_epochs + epoch + 1
 
-        training_loss, training_accuracy = (
-            train_one_epoch(
-                model,
-                train_loader,
-                criterion,
-                optimizer,
-                scaler,
-            )
+        training_loss, training_accuracy = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler
         )
 
         (
             validation_accuracy,
             validation_loss,
             _,
+            validation_balanced_accuracy,
         ) = evaluate_model(
-            model,
-            validation_loader,
-            validation_classes,
-            criterion,
+            model, validation_loader, validation_classes, eval_criterion
         )
 
-        current_lr = (
-            optimizer.param_groups[0]["lr"]
-        )
+        current_lr = optimizer.param_groups[0]["lr"]
 
         if scheduler_type == "plateau":
-
-            scheduler.step(
-                validation_accuracy
-            )
-
+            scheduler.step(validation_balanced_accuracy)
         else:
-
             scheduler.step()
 
         improved = False
 
-        if (
-            validation_accuracy
-            > best_validation_accuracy
-        ):
-
+        if validation_balanced_accuracy > best_validation_balanced_accuracy:
             improved = True
 
         elif (
-            validation_accuracy
-            == best_validation_accuracy
-            and validation_loss
-            < best_validation_loss
+            validation_balanced_accuracy == best_validation_balanced_accuracy
+            and validation_loss < best_validation_loss
         ):
-
             improved = True
 
         if improved:
 
-            best_validation_accuracy = (
-                validation_accuracy
-            )
-
-            best_validation_loss = (
-                validation_loss
-            )
-
+            best_validation_accuracy = validation_accuracy
+            best_validation_balanced_accuracy = validation_balanced_accuracy
+            best_validation_loss = validation_loss
             best_epoch = actual_epoch
-
             epochs_without_improvement = 0
-
-            best_state = move_state_to_cpu(
-                model.state_dict()
-            )
+            best_state = move_state_to_cpu(model.state_dict())
 
             status = " <-- BEST"
 
         else:
 
             epochs_without_improvement += 1
-
             status = ""
 
         print(
-            f"Epoch {actual_epoch:2}/"
-            f"{MAX_EPOCHS} | "
+            f"Epoch {actual_epoch:2}/{MAX_EPOCHS} | "
             f"LR {current_lr:.2e} | "
             f"Loss {training_loss:.4f} | "
-            f"Train "
-            f"{training_accuracy:5.1f}% | "
-            f"Val "
-            f"{validation_accuracy:5.1f}% | "
-            f"Val Loss "
-            f"{validation_loss:.4f}"
+            f"Train {training_accuracy:5.1f}% | "
+            f"Val {validation_accuracy:5.1f}% | "
+            f"Val Bal {validation_balanced_accuracy:5.1f}% | "
+            f"Val Loss {validation_loss:.4f}"
             f"{status}"
         )
 
-        if (
-            epochs_without_improvement
-            >= EARLY_STOPPING_PATIENCE
-        ):
+        if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
 
-            print(
-                "\nEarly stopping."
-            )
-
+            print("\nEarly stopping.")
             break
 
     if best_state is not None:
+        model.load_state_dict(best_state)
 
-        model.load_state_dict(
-            best_state
-        )
-
-    elapsed = (
-        time.time()
-        - start_time
-    )
+    elapsed = time.time() - start_time
 
     result = {
         "stage": stage_number,
         "trial": trial_number,
         "model_name": MODEL_NAME,
         "hyperparameters": hyperparameters,
-        "best_validation_accuracy": (
-            best_validation_accuracy
-        ),
-        "best_validation_loss": (
-            best_validation_loss
-        ),
+        "best_validation_accuracy": best_validation_accuracy,
+        "best_validation_balanced_accuracy": best_validation_balanced_accuracy,
+        "best_validation_loss": best_validation_loss,
         "best_epoch": best_epoch,
-        "training_time_seconds": round(
-            elapsed,
-            2,
-        ),
+        "training_time_seconds": round(elapsed, 2),
     }
 
+    print(f"\n{'-' * 70}")
+    print(f"TRIAL {trial_number} COMPLETE")
+    print(f"{'-' * 70}")
+    print(f"Best validation accuracy: {best_validation_accuracy:.2f}%")
     print(
-        f"\n{'-' * 70}"
+        f"Best validation balanced accuracy: "
+        f"{best_validation_balanced_accuracy:.2f}%"
     )
+    print(f"Best validation loss: {best_validation_loss:.4f}")
+    print(f"Best epoch: {best_epoch}")
+    print(f"Training time: {elapsed / 60:.1f} minutes")
 
-    print(
-        f"TRIAL {trial_number} COMPLETE"
-    )
-
-    print(
-        f"{'-' * 70}"
-    )
-
-    print(
-        f"Best validation accuracy: "
-        f"{best_validation_accuracy:.2f}%"
-    )
-
-    print(
-        f"Best validation loss: "
-        f"{best_validation_loss:.4f}"
-    )
-
-    print(
-        f"Best epoch: {best_epoch}"
-    )
-
-    print(
-        f"Training time: "
-        f"{elapsed / 60:.1f} minutes"
-    )
-
-    return (
-        result,
-        model,
-    )
+    return result, model
 
 
-def test_best_model(
-    model,
-    test_samples,
-    test_classes,
-    image_size,
-    label_smoothing,
-):
-    print(
-        f"\n{'=' * 70}"
-    )
-
-    print(
-        "FINAL TEST EVALUATION"
-    )
-
-    print(
-        f"{'=' * 70}"
-    )
+def test_best_model(model, test_samples, test_classes, image_size, label_smoothing):
+    print(f"\n{'=' * 70}")
+    print("FINAL TEST EVALUATION")
+    print(f"{'=' * 70}")
 
     test_dataset = ImageListDataset(
         test_samples,
         test_classes,
-        transform=create_validation_transform(
-            image_size
-        ),
+        transform=create_validation_transform(image_size),
     )
 
-    test_loader = create_dataloader(
-        test_dataset,
-        shuffle=False,
-    )
+    test_loader = create_dataloader(test_dataset, shuffle=False)
 
-    criterion = nn.CrossEntropyLoss(
-        label_smoothing=label_smoothing
-    )
+    model.eval()
 
-    (
-        test_accuracy,
-        test_loss,
-        class_accuracy,
-    ) = evaluate_model(
-        model,
-        test_loader,
-        test_classes,
-        criterion,
-    )
+    total = 0
+    correct = 0
+    total_loss = 0.0
 
-    print(
-        f"\nFINAL TEST ACCURACY: "
-        f"{test_accuracy:.2f}%"
-    )
+    class_correct = {class_name: 0 for class_name in test_classes}
+    class_total = {class_name: 0 for class_name in test_classes}
 
-    print(
-        f"FINAL TEST LOSS: "
-        f"{test_loss:.4f}"
-    )
+    with torch.inference_mode():
 
-    print(
-        "\nPer-class test accuracy:"
-    )
+        for images, labels in test_loader:
+
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+
+            flipped_images = torch.flip(images, dims=[3])
+
+            if USE_MIXED_PRECISION:
+
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    outputs = model(images)
+                    flipped_outputs = model(flipped_images)
+
+            else:
+
+                outputs = model(images)
+                flipped_outputs = model(flipped_images)
+
+            probabilities = (
+                torch.softmax(outputs, dim=1)
+                + torch.softmax(flipped_outputs, dim=1)
+            ) / 2
+
+            loss = nn.functional.nll_loss(
+                torch.log(probabilities.clamp(min=1e-8)), labels
+            )
+
+            total_loss += loss.item() * labels.size(0)
+
+            _, predicted = torch.max(probabilities, 1)
+
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+            for label, prediction in zip(labels, predicted):
+
+                class_name = test_classes[label.item()]
+                class_total[class_name] += 1
+
+                if prediction.item() == label.item():
+                    class_correct[class_name] += 1
+
+    test_accuracy = 100 * correct / total if total > 0 else 0
+    test_loss = total_loss / total if total > 0 else 0
+
+    class_accuracy = {}
 
     for class_name in test_classes:
 
-        print(
-            f"  {class_name:25s}: "
-            f"{class_accuracy[class_name]:5.1f}%"
-        )
+        if class_total[class_name] > 0:
+            class_accuracy[class_name] = (
+                100 * class_correct[class_name] / class_total[class_name]
+            )
+        else:
+            class_accuracy[class_name] = 0
 
-    return (
-        test_accuracy,
-        test_loss,
-        class_accuracy,
+    valid_accuracies = [
+        class_accuracy[class_name]
+        for class_name in test_classes
+        if class_total[class_name] > 0
+    ]
+
+    balanced_test_accuracy = (
+        sum(valid_accuracies) / len(valid_accuracies)
+        if valid_accuracies
+        else 0
     )
+
+    print(f"\nFINAL TEST ACCURACY: {test_accuracy:.2f}%")
+    print(f"FINAL TEST BALANCED ACCURACY: {balanced_test_accuracy:.2f}%")
+    print(f"FINAL TEST LOSS: {test_loss:.4f}")
+    print("\nPer-class test accuracy:")
+
+    for class_name in test_classes:
+        print(f"  {class_name:25s}: {class_accuracy[class_name]:5.1f}%")
+
+    return test_accuracy, test_loss, class_accuracy, balanced_test_accuracy
 
 
 def save_model(
@@ -1153,6 +917,7 @@ def save_model(
     classes,
     hyperparameters,
     validation_accuracy,
+    validation_balanced_accuracy,
     validation_loss,
     best_epoch,
     output_file,
@@ -1161,35 +926,22 @@ def save_model(
         "model_name": MODEL_NAME,
         "model_state": model.state_dict(),
         "classes": classes,
-        "image_size": hyperparameters[
-            "image_size"
-        ],
+        "image_size": hyperparameters["image_size"],
         "mean": IMAGENET_MEAN,
         "std": IMAGENET_STD,
-        "best_validation_accuracy": (
-            validation_accuracy
-        ),
-        "best_validation_loss": (
-            validation_loss
-        ),
+        "best_validation_accuracy": validation_accuracy,
+        "best_validation_balanced_accuracy": validation_balanced_accuracy,
+        "best_validation_loss": validation_loss,
         "best_epoch": best_epoch,
         "hyperparameters": hyperparameters,
     }
 
-    torch.save(
-        checkpoint,
-        output_file,
-    )
+    torch.save(checkpoint, output_file)
 
-    print(
-        f"\nBest model saved to: "
-        f"{output_file}"
-    )
-
+    print(f"\nBest model saved to: {output_file}")
     print(
         f"Detection image size: "
-        f"{checkpoint['image_size']}x"
-        f"{checkpoint['image_size']}"
+        f"{checkpoint['image_size']}x{checkpoint['image_size']}"
     )
 
 
@@ -1202,174 +954,88 @@ def run_stage(
     test_samples,
     test_classes,
 ):
-    print(
-        f"\n\n{'=' * 70}"
-    )
-
-    print(
-        f"STARTING STAGE {stage_number}"
-    )
-
-    print(
-        f"{'=' * 70}"
-    )
+    print(f"\n\n{'=' * 70}")
+    print(f"STARTING STAGE {stage_number}")
+    print(f"{'=' * 70}")
 
     if stage_number == 1:
-
-        search_space = (
-            STAGE1_SEARCH_SPACE
-        )
-
-        output_file = (
-            STAGE1_BEST_FILE
-        )
+        search_space = STAGE1_SEARCH_SPACE
+        output_file = STAGE1_BEST_FILE
 
     elif stage_number == 2:
-
-        search_space = (
-            STAGE2_SEARCH_SPACE
-        )
-
-        output_file = (
-            STAGE2_BEST_FILE
-        )
+        search_space = STAGE2_SEARCH_SPACE
+        output_file = STAGE2_BEST_FILE
 
     elif stage_number == 3:
-
-        search_space = (
-            STAGE3_SEARCH_SPACE
-        )
-
-        output_file = (
-            STAGE3_BEST_FILE
-        )
+        search_space = STAGE3_SEARCH_SPACE
+        output_file = STAGE3_BEST_FILE
 
     else:
+        raise ValueError(f"Unsupported stage: {stage_number}")
 
-        raise ValueError(
-            f"Unsupported stage: "
-            f"{stage_number}"
-        )
+    print(f"\nTraining images: {len(train_samples)}")
+    print(f"Validation images: {len(validation_samples)}")
+    print(f"Test images: {len(test_samples)}")
 
-    print(
-        f"\nTraining images: "
-        f"{len(train_samples)}"
-    )
+    print("\nClasses:")
 
-    print(
-        f"Validation images: "
-        f"{len(validation_samples)}"
-    )
+    for index, class_name in enumerate(train_classes):
+        print(f"  {index}: {class_name}")
 
-    print(
-        f"Test images: "
-        f"{len(test_samples)}"
-    )
-
-    print(
-        "\nClasses:"
-    )
-
-    for index, class_name in enumerate(
-        train_classes
-    ):
-
-        print(
-            f"  {index}: {class_name}"
-        )
-
-    print(
-        "\nTraining distribution:"
-    )
-
-    print_class_counts(
-        train_samples,
-        train_classes,
-    )
+    print("\nTraining distribution:")
+    print_class_counts(train_samples, train_classes)
 
     results = []
     best_result = None
     best_model = None
 
-    for trial in range(
-        1,
-        NUM_TUNING_TRIALS + 1,
-    ):
+    for trial in range(1, NUM_TUNING_TRIALS + 1):
 
-        set_seed(
-            RANDOM_SEED
-            + stage_number * 1000
-            + trial
-        )
+        set_seed(RANDOM_SEED + stage_number * 1000 + trial)
 
-        hyperparameters = (
-            sample_hyperparameters(
-                search_space
-            )
-        )
+        hyperparameters = sample_hyperparameters(search_space)
 
         trial_model = None
 
         try:
 
-            result, trial_model = (
-                train_trial(
-                    stage_number,
-                    trial,
-                    hyperparameters,
-                    train_samples,
-                    train_classes,
-                    validation_samples,
-                    validation_classes,
-                )
+            result, trial_model = train_trial(
+                stage_number,
+                trial,
+                hyperparameters,
+                train_samples,
+                train_classes,
+                validation_samples,
+                validation_classes,
             )
 
             results.append(result)
 
             if (
                 best_result is None
-                or result[
-                    "best_validation_accuracy"
-                ]
-                > best_result[
-                    "best_validation_accuracy"
-                ]
+                or result["best_validation_balanced_accuracy"]
+                > best_result["best_validation_balanced_accuracy"]
             ):
 
                 if best_model is not None:
-                    cleanup_model(
-                        best_model
-                    )
+                    cleanup_model(best_model)
 
                 best_result = result
-
                 best_model = trial_model
-
                 trial_model = None
 
+                print("\n*** NEW BEST TRIAL ***")
                 print(
-                    "\n*** NEW BEST TRIAL ***"
-                )
-
-                print(
-                    f"Validation accuracy: "
-                    f"{result['best_validation_accuracy']:.2f}%"
+                    f"Validation balanced accuracy: "
+                    f"{result['best_validation_balanced_accuracy']:.2f}%"
                 )
 
         except RuntimeError as error:
 
-            if (
-                "out of memory"
-                in str(error).lower()
-            ):
+            if "out of memory" in str(error).lower():
 
-                print(
-                    "\nCUDA OUT OF MEMORY."
-                )
-
-                print(
-                    "Skipping this trial."
-                )
+                print("\nCUDA OUT OF MEMORY.")
+                print("Skipping this trial.")
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -1381,123 +1047,60 @@ def run_stage(
         finally:
 
             if trial_model is not None:
-                cleanup_model(
-                    trial_model
-                )
+                cleanup_model(trial_model)
 
             if torch.cuda.is_available():
-
                 torch.cuda.empty_cache()
 
     if best_result is None:
 
-        print(
-            "\nNo successful trials."
-        )
-
+        print("\nNo successful trials.")
         return None
 
     results.sort(
-        key=lambda x:
-        x[
-            "best_validation_accuracy"
-        ],
-        reverse=True,
+        key=lambda x: x["best_validation_balanced_accuracy"], reverse=True
     )
 
-    print(
-        f"\n\n{'=' * 70}"
-    )
+    print(f"\n\n{'=' * 70}")
+    print(f"STAGE {stage_number} TRIAL LEADERBOARD")
+    print(f"{'=' * 70}")
 
-    print(
-        f"STAGE {stage_number} "
-        f"TRIAL LEADERBOARD"
-    )
+    for index, result in enumerate(results, start=1):
 
-    print(
-        f"{'=' * 70}"
-    )
+        hp = result["hyperparameters"]
 
-    for index, result in enumerate(
-        results,
-        start=1,
-    ):
-
-        hp = result[
-            "hyperparameters"
-        ]
-
+        print(f"\n#{index} Trial {result['trial']}")
+        print(f"  Validation: {result['best_validation_accuracy']:.2f}%")
         print(
-            f"\n#{index} "
-            f"Trial {result['trial']}"
+            f"  Validation balanced: "
+            f"{result['best_validation_balanced_accuracy']:.2f}%"
         )
-
-        print(
-            f"  Validation: "
-            f"{result['best_validation_accuracy']:.2f}%"
-        )
-
-        print(
-            f"  Image size: "
-            f"{hp['image_size']}"
-        )
-
-        print(
-            f"  LR: "
-            f"{hp['learning_rate']}"
-        )
-
-        print(
-            f"  Weight decay: "
-            f"{hp['weight_decay']}"
-        )
-
-        print(
-            f"  Label smoothing: "
-            f"{hp['label_smoothing']}"
-        )
-
-        print(
-            f"  Backbone LR multiplier: "
-            f"{hp['backbone_lr_multiplier']}"
-        )
-
-        print(
-            f"  Head-only epochs: "
-            f"{hp['head_only_epochs']}"
-        )
-
-        print(
-            f"  Scheduler: "
-            f"{hp['scheduler']}"
-        )
+        print(f"  Image size: {hp['image_size']}")
+        print(f"  LR: {hp['learning_rate']}")
+        print(f"  Weight decay: {hp['weight_decay']}")
+        print(f"  Label smoothing: {hp['label_smoothing']}")
+        print(f"  Backbone LR multiplier: {hp['backbone_lr_multiplier']}")
+        print(f"  Head-only epochs: {hp['head_only_epochs']}")
+        print(f"  Scheduler: {hp['scheduler']}")
 
     save_model(
         best_model,
         train_classes,
-        best_result[
-            "hyperparameters"
-        ],
-        best_result[
-            "best_validation_accuracy"
-        ],
-        best_result[
-            "best_validation_loss"
-        ],
-        best_result[
-            "best_epoch"
-        ],
+        best_result["hyperparameters"],
+        best_result["best_validation_accuracy"],
+        best_result["best_validation_balanced_accuracy"],
+        best_result["best_validation_loss"],
+        best_result["best_epoch"],
         output_file,
     )
 
-    hp = best_result[
-        "hyperparameters"
-    ]
+    hp = best_result["hyperparameters"]
 
     (
         test_accuracy,
         test_loss,
         test_class_accuracy,
+        test_balanced_accuracy,
     ) = test_best_model(
         best_model,
         test_samples,
@@ -1506,22 +1109,12 @@ def run_stage(
         hp["label_smoothing"],
     )
 
-    best_result[
-        "final_test_accuracy"
-    ] = test_accuracy
+    best_result["final_test_accuracy"] = test_accuracy
+    best_result["final_test_balanced_accuracy"] = test_balanced_accuracy
+    best_result["final_test_loss"] = test_loss
+    best_result["final_test_class_accuracy"] = test_class_accuracy
 
-    best_result[
-        "final_test_loss"
-    ] = test_loss
-
-    best_result[
-        "final_test_class_accuracy"
-    ] = test_class_accuracy
-
-    cleanup_model(
-        best_model
-    )
-
+    cleanup_model(best_model)
     best_model = None
 
     return {
@@ -1534,68 +1127,31 @@ def run_stage(
 
 def load_stage_datasets(stage_number):
     if stage_number == 1:
-
         builder = build_stage1_dataset
 
     elif stage_number == 2:
-
         builder = build_fish_dataset
 
     elif stage_number == 3:
-
         builder = build_other_dataset
 
     else:
+        raise ValueError(f"Unknown stage: {stage_number}")
 
-        raise ValueError(
-            f"Unknown stage: "
-            f"{stage_number}"
-        )
+    train_samples, train_classes = builder(TRAIN_DIR)
+    validation_samples, validation_classes = builder(VALIDATION_DIR)
+    test_samples, test_classes = builder(TEST_DIR)
 
-    (
-        train_samples,
-        train_classes,
-    ) = builder(
-        TRAIN_DIR
-    )
-
-    (
-        validation_samples,
-        validation_classes,
-    ) = builder(
-        VALIDATION_DIR
-    )
-
-    (
-        test_samples,
-        test_classes,
-    ) = builder(
-        TEST_DIR
-    )
-
-    if (
-        train_classes
-        != validation_classes
-    ):
-
+    if train_classes != validation_classes:
         raise RuntimeError(
-            f"Stage {stage_number} "
-            f"training and validation "
-            f"classes do not match.\n"
+            f"Stage {stage_number} training and validation classes do not match.\n"
             f"Training: {train_classes}\n"
-            f"Validation: "
-            f"{validation_classes}"
+            f"Validation: {validation_classes}"
         )
 
-    if (
-        train_classes
-        != test_classes
-    ):
-
+    if train_classes != test_classes:
         raise RuntimeError(
-            f"Stage {stage_number} "
-            f"training and test "
-            f"classes do not match.\n"
+            f"Stage {stage_number} training and test classes do not match.\n"
             f"Training: {train_classes}\n"
             f"Test: {test_classes}"
         )
@@ -1613,83 +1169,35 @@ def load_stage_datasets(stage_number):
 def main():
     total_start_time = time.time()
 
-    set_seed(
-        RANDOM_SEED
-    )
+    set_seed(RANDOM_SEED)
 
-    print(
-        f"{'=' * 70}"
-    )
+    print(f"{'=' * 70}")
+    print("3-STAGE RESNET18 HYPERPARAMETER TUNER")
+    print(f"{'=' * 70}")
 
-    print(
-        "3-STAGE RESNET18 "
-        "HYPERPARAMETER TUNER"
-    )
-
-    print(
-        f"{'=' * 70}"
-    )
-
-    print(
-        f"\nDevice: {device}"
-    )
+    print(f"\nDevice: {device}")
 
     if torch.cuda.is_available():
 
-        print(
-            f"GPU: "
-            f"{torch.cuda.get_device_name(0)}"
-        )
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
 
         gpu_memory = (
-            torch.cuda
-            .get_device_properties(0)
-            .total_memory
-            / (1024 ** 3)
+            torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         )
 
-        print(
-            f"VRAM: "
-            f"{gpu_memory:.1f} GB"
-        )
-
-        print(
-            "Mixed precision: ENABLED"
-        )
+        print(f"VRAM: {gpu_memory:.1f} GB")
+        print("Mixed precision: ENABLED")
 
     else:
 
-        print(
-            "CUDA: DISABLED"
-        )
+        print("CUDA: DISABLED")
 
-    print(
-        f"\nStages: {TRAIN_STAGES}"
-    )
-
-    print(
-        f"Tuning trials per stage: "
-        f"{NUM_TUNING_TRIALS}"
-    )
-
-    print(
-        f"Maximum epochs per trial: "
-        f"{MAX_EPOCHS}"
-    )
-
-    print(
-        f"Batch size: {BATCH_SIZE}"
-    )
-
-    print(
-        f"DataLoader workers: "
-        f"{NUM_WORKERS}"
-    )
-
-    print(
-        f"RAM image cache: "
-        f"{USE_RAM_IMAGE_CACHE}"
-    )
+    print(f"\nStages: {TRAIN_STAGES}")
+    print(f"Tuning trials per stage: {NUM_TUNING_TRIALS}")
+    print(f"Maximum epochs per trial: {MAX_EPOCHS}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"DataLoader workers: {NUM_WORKERS}")
+    print(f"RAM image cache: {USE_RAM_IMAGE_CACHE}")
 
     all_results = {}
 
@@ -1702,56 +1210,23 @@ def main():
             validation_classes,
             test_samples,
             test_classes,
-        ) = load_stage_datasets(
-            stage_number
-        )
+        ) = load_stage_datasets(stage_number)
 
-        print(
-            f"\n\n{'=' * 70}"
-        )
+        print(f"\n\n{'=' * 70}")
+        print(f"BUILDING STAGE {stage_number} DATASET")
+        print(f"{'=' * 70}")
 
-        print(
-            f"BUILDING STAGE "
-            f"{stage_number} DATASET"
-        )
+        print(f"\nTraining images: {len(train_samples)}")
+        print(f"Validation images: {len(validation_samples)}")
+        print(f"Test images: {len(test_samples)}")
 
-        print(
-            f"{'=' * 70}"
-        )
-
-        print(
-            f"\nTraining images: "
-            f"{len(train_samples)}"
-        )
-
-        print(
-            f"Validation images: "
-            f"{len(validation_samples)}"
-        )
-
-        print(
-            f"Test images: "
-            f"{len(test_samples)}"
-        )
-
-        print(
-            "\nClasses:"
-        )
+        print("\nClasses:")
 
         for class_name in train_classes:
+            print(f"  {class_name}")
 
-            print(
-                f"  {class_name}"
-            )
-
-        print(
-            "\nTraining distribution:"
-        )
-
-        print_class_counts(
-            train_samples,
-            train_classes,
-        )
+        print("\nTraining distribution:")
+        print_class_counts(train_samples, train_classes)
 
         result = run_stage(
             stage_number=stage_number,
@@ -1763,9 +1238,7 @@ def main():
             test_classes=test_classes,
         )
 
-        all_results[
-            f"stage_{stage_number}"
-        ] = result
+        all_results[f"stage_{stage_number}"] = result
 
         if torch.cuda.is_available():
 
@@ -1778,129 +1251,49 @@ def main():
 
         _IMAGE_CACHE.clear()
 
-    with open(
-        TUNING_RESULTS_FILE,
-        "w",
-        encoding="utf-8",
-    ) as file:
+    with open(TUNING_RESULTS_FILE, "w", encoding="utf-8") as file:
+        json.dump(all_results, file, indent=4)
 
-        json.dump(
-            all_results,
-            file,
-            indent=4,
-        )
+    total_elapsed = time.time() - total_start_time
 
-    total_elapsed = (
-        time.time()
-        - total_start_time
-    )
+    print(f"\n\n{'=' * 70}")
+    print("ALL THREE MODELS COMPLETE")
+    print(f"{'=' * 70}")
 
-    print(
-        f"\n\n{'=' * 70}"
-    )
-
-    print(
-        "ALL THREE MODELS COMPLETE"
-    )
-
-    print(
-        f"{'=' * 70}"
-    )
-
-    for stage_key, result in (
-        all_results.items()
-    ):
+    for stage_key, result in all_results.items():
 
         if result is None:
             continue
 
-        best = result[
-            "best_trial"
-        ]
+        best = result["best_trial"]
+        hp = best["hyperparameters"]
 
-        hp = best[
-            "hyperparameters"
-        ]
-
+        print(f"\n{stage_key.upper()}")
+        print("-" * 50)
+        print(f"Best trial: {best['trial']}")
+        print(f"Validation accuracy: {best['best_validation_accuracy']:.2f}%")
         print(
-            f"\n{stage_key.upper()}"
+            f"Validation balanced accuracy: "
+            f"{best['best_validation_balanced_accuracy']:.2f}%"
         )
-
+        print(f"Test accuracy: {best['final_test_accuracy']:.2f}%")
         print(
-            "-" * 50
+            f"Test balanced accuracy: "
+            f"{best['final_test_balanced_accuracy']:.2f}%"
         )
+        print(f"Image size: {hp['image_size']}x{hp['image_size']}")
+        print(f"Learning rate: {hp['learning_rate']}")
+        print(f"Weight decay: {hp['weight_decay']}")
+        print(f"Label smoothing: {hp['label_smoothing']}")
+        print(f"Backbone LR multiplier: {hp['backbone_lr_multiplier']}")
+        print(f"Head-only epochs: {hp['head_only_epochs']}")
+        print(f"Scheduler: {hp['scheduler']}")
+        print(f"Model file: {result['model_file']}")
 
-        print(
-            f"Best trial: "
-            f"{best['trial']}"
-        )
+    print(f"\nResults saved to: {TUNING_RESULTS_FILE}")
+    print(f"Total training time: {total_elapsed / 60:.1f} minutes")
 
-        print(
-            f"Validation accuracy: "
-            f"{best['best_validation_accuracy']:.2f}%"
-        )
-
-        print(
-            f"Test accuracy: "
-            f"{best['final_test_accuracy']:.2f}%"
-        )
-
-        print(
-            f"Image size: "
-            f"{hp['image_size']}x"
-            f"{hp['image_size']}"
-        )
-
-        print(
-            f"Learning rate: "
-            f"{hp['learning_rate']}"
-        )
-
-        print(
-            f"Weight decay: "
-            f"{hp['weight_decay']}"
-        )
-
-        print(
-            f"Label smoothing: "
-            f"{hp['label_smoothing']}"
-        )
-
-        print(
-            f"Backbone LR multiplier: "
-            f"{hp['backbone_lr_multiplier']}"
-        )
-
-        print(
-            f"Head-only epochs: "
-            f"{hp['head_only_epochs']}"
-        )
-
-        print(
-            f"Scheduler: "
-            f"{hp['scheduler']}"
-        )
-
-        print(
-            f"Model file: "
-            f"{result['model_file']}"
-        )
-
-    print(
-        f"\nResults saved to: "
-        f"{TUNING_RESULTS_FILE}"
-    )
-
-    print(
-        f"Total training time: "
-        f"{total_elapsed / 60:.1f} minutes"
-    )
-
-    print(
-        f"\n{'=' * 70}\n"
-        "DONE\n"
-        f"{'=' * 70}"
-    )
+    print(f"\n{'=' * 70}\nDONE\n{'=' * 70}")
 
 
 if __name__ == "__main__":

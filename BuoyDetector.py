@@ -31,16 +31,16 @@ SETTINGS_FILE = (
 )
 
 DEFAULT_SETTINGS = {
-    "buoy_green_percentage": 5.0,
+    "buoy_green_pixels": 15,
     "green_min": 40,
     "green_dominance": 1.10,
-    "missed_red_percentage": 70.0,
+    "missed_red_pixels": 20000,
     "red_min": 40,
     "red_dominance": 2.5,
-    "bait_green_percentage": 0.1,
-    "bait_green_dominance": 0.3,
-    "bait_missed_red_percentage": 0.1,
-    "bait_red_dominance": 0.3,
+    "bait_green_pixels": 5,
+    "bait_green_dominance": 1.05,
+    "bait_missed_red_pixels": 20000,
+    "bait_red_dominance": 2.5,
 }
 
 
@@ -106,9 +106,9 @@ def load_settings():
 
 SETTINGS = load_settings()
 
-BUOY_GREEN_PERCENTAGE = float(
+BUOY_GREEN_PIXELS = int(
     SETTINGS[
-        "buoy_green_percentage"
+        "buoy_green_pixels"
     ]
 )
 
@@ -124,9 +124,9 @@ GREEN_DOMINANCE = float(
     ]
 )
 
-MISSED_RED_PERCENTAGE = float(
+MISSED_RED_PIXELS = int(
     SETTINGS[
-        "missed_red_percentage"
+        "missed_red_pixels"
     ]
 )
 
@@ -142,9 +142,9 @@ RED_DOMINANCE = float(
     ]
 )
 
-BAIT_GREEN_PERCENTAGE = float(
+BAIT_GREEN_PIXELS = int(
     SETTINGS[
-        "bait_green_percentage"
+        "bait_green_pixels"
     ]
 )
 
@@ -154,9 +154,9 @@ BAIT_GREEN_DOMINANCE = float(
     ]
 )
 
-BAIT_MISSED_RED_PERCENTAGE = float(
+BAIT_MISSED_RED_PIXELS = int(
     SETTINGS[
-        "bait_missed_red_percentage"
+        "bait_missed_red_pixels"
     ]
 )
 
@@ -179,9 +179,9 @@ def get_buoy_colors():
         screenshot
     )
 
-    r = img_array[:, :, 0]
-    g = img_array[:, :, 1]
-    b = img_array[:, :, 2]
+    r = img_array[:, :, 0].astype(np.int16)
+    g = img_array[:, :, 1].astype(np.int16)
+    b = img_array[:, :, 2].astype(np.int16)
 
     return (
         r,
@@ -190,7 +190,7 @@ def get_buoy_colors():
     )
 
 
-def calculate_green_percentage(
+def calculate_green_pixels(
     r,
     g,
     b,
@@ -209,22 +209,14 @@ def calculate_green_percentage(
         )
     )
 
-    green_pixels = np.count_nonzero(
-        green_mask
+    return int(
+        np.count_nonzero(
+            green_mask
+        )
     )
 
-    total_pixels = r.size
 
-    if total_pixels == 0:
-        return 0.0
-
-    return (
-        green_pixels
-        / total_pixels
-    ) * 100.0
-
-
-def calculate_red_percentage(
+def calculate_red_pixels(
     r,
     g,
     b,
@@ -243,29 +235,21 @@ def calculate_red_percentage(
         )
     )
 
-    red_pixels = np.count_nonzero(
-        red_mask
+    return int(
+        np.count_nonzero(
+            red_mask
+        )
     )
-
-    total_pixels = r.size
-
-    if total_pixels == 0:
-        return 0.0
-
-    return (
-        red_pixels
-        / total_pixels
-    ) * 100.0
 
 
 def check_buoy_green(
-    green_percentage_threshold=BUOY_GREEN_PERCENTAGE,
+    green_pixel_threshold=BUOY_GREEN_PIXELS,
     green_dominance=GREEN_DOMINANCE,
 ):
 
     r, g, b = get_buoy_colors()
 
-    percentage = calculate_green_percentage(
+    pixel_count = calculate_green_pixels(
         r,
         g,
         b,
@@ -273,19 +257,19 @@ def check_buoy_green(
     )
 
     return (
-        percentage >= green_percentage_threshold,
-        percentage,
+        pixel_count >= green_pixel_threshold,
+        pixel_count,
     )
 
 
 def check_buoy_missed(
-    red_percentage_threshold=MISSED_RED_PERCENTAGE,
+    red_pixel_threshold=MISSED_RED_PIXELS,
     red_dominance=RED_DOMINANCE,
 ):
 
     r, g, b = get_buoy_colors()
 
-    percentage = calculate_red_percentage(
+    pixel_count = calculate_red_pixels(
         r,
         g,
         b,
@@ -293,8 +277,8 @@ def check_buoy_missed(
     )
 
     return (
-        percentage >= red_percentage_threshold,
-        percentage,
+        pixel_count >= red_pixel_threshold,
+        pixel_count,
     )
 
 
@@ -305,7 +289,7 @@ def check_buoy(
     if bait_equipped:
 
         green_threshold = (
-            BAIT_GREEN_PERCENTAGE
+            BAIT_GREEN_PIXELS
         )
 
         green_dominance = (
@@ -313,7 +297,7 @@ def check_buoy(
         )
 
         red_threshold = (
-            BAIT_MISSED_RED_PERCENTAGE
+            BAIT_MISSED_RED_PIXELS
         )
 
         red_dominance = (
@@ -323,7 +307,7 @@ def check_buoy(
     else:
 
         green_threshold = (
-            BUOY_GREEN_PERCENTAGE
+            BUOY_GREEN_PIXELS
         )
 
         green_dominance = (
@@ -331,7 +315,7 @@ def check_buoy(
         )
 
         red_threshold = (
-            MISSED_RED_PERCENTAGE
+            MISSED_RED_PIXELS
         )
 
         red_dominance = (
@@ -340,8 +324,8 @@ def check_buoy(
 
     r, g, b = get_buoy_colors()
 
-    green_percentage = (
-        calculate_green_percentage(
+    green_pixels = (
+        calculate_green_pixels(
             r,
             g,
             b,
@@ -350,17 +334,17 @@ def check_buoy(
     )
 
     if (
-        green_percentage
+        green_pixels
         >= green_threshold
     ):
 
         return (
             "green",
-            green_percentage,
+            green_pixels,
         )
 
-    red_percentage = (
-        calculate_red_percentage(
+    red_pixels = (
+        calculate_red_pixels(
             r,
             g,
             b,
@@ -369,18 +353,18 @@ def check_buoy(
     )
 
     if (
-        red_percentage
+        red_pixels
         >= red_threshold
     ):
 
         return (
             "missed",
-            red_percentage,
+            red_pixels,
         )
 
     return (
         None,
-        0.0,
+        0,
     )
 
 
@@ -391,7 +375,7 @@ def wait_for_buoy(
 
     while enabled_callback():
 
-        state, percentage = (
+        state, pixel_count = (
             check_buoy(
                 bait_equipped=bait_equipped
             )
@@ -400,7 +384,7 @@ def wait_for_buoy(
         if state == "green":
 
             print(
-                f"GREEN: {percentage:.2f}%"
+                f"GREEN: {pixel_count} px"
             )
 
             return "green"
@@ -408,7 +392,7 @@ def wait_for_buoy(
         if state == "missed":
 
             print(
-                f"RED: {percentage:.2f}%"
+                f"RED: {pixel_count} px"
             )
 
             return "missed"

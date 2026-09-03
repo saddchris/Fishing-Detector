@@ -19,7 +19,7 @@ GITHUB_REPO = "Fishing-Detector"
 APP_EXE = "FishingDet.exe"
 UPDATER_EXE = "Updater.exe"
 
-VERSION_FILE = "version.json"
+VERSION_FILE = "dist/FishingDet/version.json"
 
 LATEST_RELEASE_URL = (
     f"https://api.github.com/repos/"
