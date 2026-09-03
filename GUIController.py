@@ -1560,16 +1560,23 @@ class GuiOutput:
 
 def main():
     try:
-        should_continue = Updater.update_if_needed()
+        update_needed = Updater.check_update_needed()
     except Exception as error:
-        should_continue = True
+        update_needed = False
         print(
-            f"Updater error: "
+            f"Update check error: "
             f"{type(error).__name__}: {error}"
         )
 
-    if should_continue is False:
-        return
+    if update_needed:
+        try:
+            if Updater.launch_updater_and_exit():
+                return
+        except Exception as error:
+            print(
+                f"Could not launch updater: "
+                f"{type(error).__name__}: {error}"
+            )
 
     root = tk.Tk()
     FishingControllerApp(root)

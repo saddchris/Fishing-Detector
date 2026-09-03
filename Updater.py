@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 import zipfile
 import tkinter as tk
+from tkinter import ttk
 from tkinter import messagebox
 
 
@@ -19,12 +20,25 @@ GITHUB_REPO = "Fishing-Detector"
 APP_EXE = "FishingDet.exe"
 UPDATER_EXE = "Updater.exe"
 
-VERSION_FILE = "dist/FishingDet/version.json"
+VERSION_FILE = "version.json"
 
-LATEST_RELEASE_URL = (
+PROTECTED_SETTINGS_FILENAME = "fishing_controller_settings.json"
+PROTECTED_SETTINGS_PARENT_DIRS = {
+    "configuration",
+    "settings",
+}
+
+RELEASES_URL = (
     f"https://api.github.com/repos/"
-    f"{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+    f"{GITHUB_OWNER}/{GITHUB_REPO}/releases"
 )
+
+BG_COLOR = "#15171c"
+PANEL_COLOR = "#1c1f26"
+ACCENT_COLOR = "#4f8dfd"
+TEXT_COLOR = "#f2f3f5"
+SUBTEXT_COLOR = "#9aa0ab"
+TRACK_COLOR = "#2a2e37"
 
 
 def get_install_directory():
@@ -72,7 +86,7 @@ def get_current_version():
             f"{type(error).__name__}: {error}"
         )
 
-        return "0.0.0"
+        return None
 
 
 def version_tuple(version):
@@ -101,9 +115,19 @@ def version_tuple(version):
     return tuple(result)
 
 
+def is_newer_version(candidate_version, current_version):
+    if not candidate_version or not current_version:
+        return False
+
+    return (
+        version_tuple(candidate_version)
+        > version_tuple(current_version)
+    )
+
+
 def get_latest_release():
     request = urllib.request.Request(
-        LATEST_RELEASE_URL,
+        RELEASES_URL,
         headers={
             "User-Agent": "Fishing-Detector-Updater"
         },
@@ -116,27 +140,58 @@ def get_latest_release():
         ) as response:
             data = response.read().decode("utf-8")
 
-        return json.loads(data)
+        releases = json.loads(data)
 
     except urllib.error.HTTPError as error:
         print(
             f"GitHub HTTP error: "
             f"{error.code} {error.reason}"
         )
+        return None
 
     except urllib.error.URLError as error:
         print(
             f"GitHub connection error: "
             f"{error.reason}"
         )
+        return None
 
     except Exception as error:
         print(
             f"Could not get latest release: "
             f"{type(error).__name__}: {error}"
         )
+        return None
 
-    return None
+    if not isinstance(releases, list) or not releases:
+        print("No releases found on GitHub.")
+        return None
+
+    best_release = None
+    best_version = None
+
+    for release in releases:
+        if release.get("draft"):
+            continue
+
+        if release.get("prerelease"):
+            continue
+
+        tag_name = release.get("tag_name")
+
+        if not tag_name:
+            continue
+
+        candidate_version = version_tuple(tag_name)
+
+        if best_version is None or candidate_version > best_version:
+            best_version = candidate_version
+            best_release = release
+
+    if best_release is None:
+        print("No usable non-draft, non-prerelease releases found.")
+
+    return best_release
 
 
 def get_latest_version(release):
@@ -149,31 +204,6 @@ def get_latest_version(release):
         return None
 
     return str(tag_name).strip()
-
-
-def update_available(latest_version):
-    if not latest_version:
-        return False
-
-    current_version = get_current_version()
-
-    latest_tuple = version_tuple(
-        latest_version
-    )
-
-    current_tuple = version_tuple(
-        current_version
-    )
-
-    print(
-        f"Installed version: {current_version}"
-    )
-
-    print(
-        f"Latest version:    {latest_version}"
-    )
-
-    return latest_tuple > current_tuple
 
 
 def get_update_zip_asset(release):
@@ -228,31 +258,17 @@ def should_skip_path(relative_path):
     if normalized.lower() == UPDATER_EXE.lower():
         return True
 
-    protected_directories = {
-        "config",
-        "configs",
-        "data",
-        "userdata",
-        "user_data",
-        "settings",
-    }
-
-    for part in parts[:-1]:
-        if part.lower() in protected_directories:
-            return True
-
-    protected_files = {
-        "config.json",
-        "settings.json",
-        "user_settings.json",
-        "userdata.json",
-        "user_data.json",
-    }
-
     filename = parts[-1].lower()
 
-    if filename in protected_files:
-        return True
+    if filename == PROTECTED_SETTINGS_FILENAME.lower():
+        parent_parts = [
+            part.lower()
+            for part in parts[:-1]
+        ]
+
+        for parent in parent_parts:
+            if parent in PROTECTED_SETTINGS_PARENT_DIRS:
+                return True
 
     return False
 
@@ -364,93 +380,198 @@ class UpdateWindow:
             except Exception:
                 pass
 
-        self.root.title(
-            "Fishing Detector Updater"
-        )
-
-        self.root.geometry(
-            "500x220"
-        )
-
-        self.root.resizable(
-            False,
-            False,
-        )
+        self.root.title("Fishing Detector Updater")
+        self.root.geometry("480x300")
+        self.root.resizable(False, False)
+        self.root.configure(bg=BG_COLOR)
 
         self.current_version = current_version
         self.latest_version = latest_version
 
-        title = tk.Label(
-            root,
-            text="Fishing Detector Update",
-            font=(
-                "Segoe UI",
-                16,
-                "bold",
-            ),
+        self._build_style()
+        self._build_ui()
+
+    def _build_style(self):
+        style = ttk.Style(self.root)
+
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure(
+            "Updater.Horizontal.TProgressbar",
+            troughcolor=TRACK_COLOR,
+            background=ACCENT_COLOR,
+            bordercolor=TRACK_COLOR,
+            lightcolor=ACCENT_COLOR,
+            darkcolor=ACCENT_COLOR,
+            thickness=10,
         )
 
-        title.pack(
-            pady=(25, 10)
+    def _build_ui(self):
+        outer = tk.Frame(
+            self.root,
+            bg=BG_COLOR,
+        )
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(
+            outer,
+            bg=BG_COLOR,
+        )
+        header.pack(
+            fill="x",
+            padx=32,
+            pady=(30, 4),
         )
 
-        self.version_label = tk.Label(
-            root,
-            text=(
-                f"Updating "
-                f"{current_version} "
-                f"→ "
-                f"{latest_version}"
-            ),
-            font=(
-                "Segoe UI",
-                11,
-            ),
+        icon_dot = tk.Canvas(
+            header,
+            width=10,
+            height=10,
+            bg=BG_COLOR,
+            highlightthickness=0,
+        )
+        icon_dot.create_oval(
+            0, 0, 10, 10,
+            fill=ACCENT_COLOR,
+            outline="",
+        )
+        icon_dot.pack(side="left", pady=(6, 0))
+
+        tk.Label(
+            header,
+            text="Fishing Detector",
+            font=("Segoe UI", 17, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(side="left", padx=(10, 0))
+
+        tk.Label(
+            outer,
+            text="An update is being installed",
+            font=("Segoe UI", 10),
+            bg=BG_COLOR,
+            fg=SUBTEXT_COLOR,
+        ).pack(
+            anchor="w",
+            padx=33,
+            pady=(0, 20),
         )
 
-        self.version_label.pack(
-            pady=5
+        version_card = tk.Frame(
+            outer,
+            bg=PANEL_COLOR,
+        )
+        version_card.pack(
+            fill="x",
+            padx=32,
+        )
+
+        version_inner = tk.Frame(
+            version_card,
+            bg=PANEL_COLOR,
+        )
+        version_inner.pack(
+            fill="x",
+            padx=18,
+            pady=14,
+        )
+
+        tk.Label(
+            version_inner,
+            text=self.current_version,
+            font=("Segoe UI", 12, "bold"),
+            bg=PANEL_COLOR,
+            fg=SUBTEXT_COLOR,
+        ).pack(side="left")
+
+        tk.Label(
+            version_inner,
+            text="  →  ",
+            font=("Segoe UI", 12, "bold"),
+            bg=PANEL_COLOR,
+            fg=ACCENT_COLOR,
+        ).pack(side="left")
+
+        tk.Label(
+            version_inner,
+            text=self.latest_version,
+            font=("Segoe UI", 12, "bold"),
+            bg=PANEL_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(side="left")
+
+        progress_frame = tk.Frame(
+            outer,
+            bg=BG_COLOR,
+        )
+        progress_frame.pack(
+            fill="x",
+            padx=32,
+            pady=(26, 6),
+        )
+
+        self.progress = tk.DoubleVar(value=0)
+
+        self.progress_bar = ttk.Progressbar(
+            progress_frame,
+            style="Updater.Horizontal.TProgressbar",
+            variable=self.progress,
+            maximum=100,
+            length=416,
+            mode="determinate",
+        )
+        self.progress_bar.pack(fill="x")
+
+        status_row = tk.Frame(
+            outer,
+            bg=BG_COLOR,
+        )
+        status_row.pack(
+            fill="x",
+            padx=32,
+            pady=(10, 0),
         )
 
         self.status_label = tk.Label(
-            root,
+            status_row,
             text="Preparing update...",
-            font=(
-                "Segoe UI",
-                10,
-            ),
+            font=("Segoe UI", 9),
+            bg=BG_COLOR,
+            fg=SUBTEXT_COLOR,
+            anchor="w",
+            justify="left",
         )
+        self.status_label.pack(side="left")
 
-        self.status_label.pack(
-            pady=(15, 5)
+        self.percent_label = tk.Label(
+            status_row,
+            text="0%",
+            font=("Segoe UI", 9, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
         )
+        self.percent_label.pack(side="right")
 
-        self.progress = tk.DoubleVar(
-            value=0
+        footer = tk.Label(
+            outer,
+            text="Please don't close this window",
+            font=("Segoe UI", 8),
+            bg=BG_COLOR,
+            fg=SUBTEXT_COLOR,
         )
-
-        self.progress_bar = tk.Scale(
-            root,
-            variable=self.progress,
-            from_=0,
-            to=100,
-            orient=tk.HORIZONTAL,
-            showvalue=False,
-            state=tk.DISABLED,
-            length=400,
-        )
-
-        self.progress_bar.pack(
-            pady=10
+        footer.pack(
+            side="bottom",
+            pady=16,
         )
 
     def set_status(self, text):
         try:
             self.root.after(
                 0,
-                lambda: self.status_label.config(
-                    text=text
-                ),
+                lambda: self.status_label.config(text=text),
             )
         except Exception:
             pass
@@ -459,12 +580,14 @@ class UpdateWindow:
         try:
             self.root.after(
                 0,
-                lambda: self.progress.set(
-                    value
-                ),
+                lambda: self._apply_progress(value),
             )
         except Exception:
             pass
+
+    def _apply_progress(self, value):
+        self.progress.set(value)
+        self.percent_label.config(text=f"{int(value)}%")
 
     def close(self):
         try:
@@ -491,6 +614,12 @@ def update_worker(
             get_current_version()
         )
 
+        if current_version is None:
+            raise RuntimeError(
+                "Could not determine the installed version. "
+                "Aborting update for safety."
+            )
+
         latest_version = (
             get_latest_version(release)
         )
@@ -499,6 +628,14 @@ def update_worker(
             raise RuntimeError(
                 "GitHub release does not contain "
                 "a valid version tag."
+            )
+
+        if not is_newer_version(latest_version, current_version):
+            raise RuntimeError(
+                "Refusing to install: target version is not newer "
+                "than the installed version.\n\n"
+                f"Installed: {current_version}\n"
+                f"Target: {latest_version}"
             )
 
         window.set_status(
@@ -651,6 +788,14 @@ def update_worker(
                 f"ZIP version: {package_version}"
             )
 
+        if not is_newer_version(package_version, current_version):
+            raise RuntimeError(
+                "Refusing to install: package version is not newer "
+                "than the installed version.\n\n"
+                f"Installed: {current_version}\n"
+                f"Package: {package_version}"
+            )
+
         window.set_status(
             "Closing Fishing Detector..."
         )
@@ -680,7 +825,8 @@ def update_worker(
         )
 
         if (
-            version_tuple(installed_version)
+            installed_version is None
+            or version_tuple(installed_version)
             != version_tuple(latest_version)
         ):
             raise RuntimeError(
@@ -760,81 +906,66 @@ def update_worker(
                 pass
 
 
-def update_if_needed():
-    install_directory = (
-        get_install_directory()
+def check_update_needed():
+    current_version = get_current_version()
+
+    if current_version is None:
+        return False
+
+    release = get_latest_release()
+
+    latest_version = get_latest_version(release)
+
+    if latest_version is None:
+        return False
+
+    return is_newer_version(latest_version, current_version)
+
+
+def launch_app():
+    install_directory = get_install_directory()
+
+    app_path = os.path.join(
+        install_directory,
+        APP_EXE,
     )
+
+    if not os.path.isfile(app_path):
+        print(f"{APP_EXE} not found.")
+        return False
+
+    try:
+        subprocess.Popen(
+            [app_path],
+            cwd=install_directory,
+        )
+
+        return True
+
+    except Exception as error:
+        print(
+            f"Could not start {APP_EXE}: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        return False
+
+
+def launch_updater_and_exit():
+    install_directory = get_install_directory()
 
     updater_path = os.path.join(
         install_directory,
         UPDATER_EXE,
     )
 
-    if not os.path.isfile(
-        updater_path
-    ):
-        print(
-            f"{UPDATER_EXE} not found. "
-            "Skipping update."
-        )
-
-        return True
-
-    current_version = (
-        get_current_version()
-    )
-
-    print(
-        f"Installed version: {current_version}"
-    )
-
-    release = get_latest_release()
-
-    if not release:
-        print(
-            "Could not check GitHub release. "
-            "Continuing without update."
-        )
-
-        return True
-
-    latest_version = (
-        get_latest_version(release)
-    )
-
-    if not latest_version:
-        print(
-            "GitHub release has no valid tag. "
-            "Continuing without update."
-        )
-
-        return True
-
-    print(
-        f"Latest version: {latest_version}"
-    )
-
-    if not update_available(
-        latest_version
-    ):
-        print(
-            "Application is up to date."
-        )
-
-        return True
-
-    print(
-        f"Update available: "
-        f"{current_version} -> "
-        f"{latest_version}"
-    )
+    if not os.path.isfile(updater_path):
+        print(f"{UPDATER_EXE} not found.")
+        return False
 
     try:
         updater_process = subprocess.Popen(
-            [
-                updater_path,
-                "--install-update",
-            ],
+            [updater_path],
             cwd=install_directory,
         )
 
@@ -843,7 +974,7 @@ def update_if_needed():
             f"{updater_process.pid}"
         )
 
-        return False
+        return True
 
     except Exception as error:
         print(
@@ -851,10 +982,10 @@ def update_if_needed():
             f"{type(error).__name__}: {error}"
         )
 
-        return True
+        return False
 
 
-def run_update_installer():
+def run_update_installer(release, current_version, latest_version):
     root = tk.Tk()
 
     icon_path = get_updater_icon_path()
@@ -864,36 +995,6 @@ def run_update_installer():
             root.iconbitmap(icon_path)
         except Exception:
             pass
-
-    release = get_latest_release()
-
-    if not release:
-        messagebox.showerror(
-            "Updater",
-            "Could not retrieve the latest GitHub release.",
-            parent=root,
-        )
-
-        root.destroy()
-        return
-
-    latest_version = (
-        get_latest_version(release)
-    )
-
-    if not latest_version:
-        messagebox.showerror(
-            "Updater",
-            "GitHub release does not contain a valid version.",
-            parent=root,
-        )
-
-        root.destroy()
-        return
-
-    current_version = (
-        get_current_version()
-    )
 
     window = UpdateWindow(
         root,
@@ -916,31 +1017,28 @@ def run_update_installer():
 
 
 def main():
-    if "--install-update" in sys.argv:
-        run_update_installer()
-        return
+    current_version = get_current_version()
 
-    should_continue = update_if_needed()
+    release = None
+    latest_version = None
 
-    if should_continue is False:
-        return
+    if current_version is not None:
+        release = get_latest_release()
+        latest_version = get_latest_version(release)
 
-    install_directory = (
-        get_install_directory()
-    )
-
-    app_path = os.path.join(
-        install_directory,
-        APP_EXE,
-    )
-
-    if os.path.isfile(
-        app_path
+    if (
+        current_version is not None
+        and latest_version is not None
+        and is_newer_version(latest_version, current_version)
     ):
-        subprocess.Popen(
-            [app_path],
-            cwd=install_directory,
+        run_update_installer(
+            release,
+            current_version,
+            latest_version,
         )
+        return
+
+    launch_app()
 
 
 if __name__ == "__main__":
