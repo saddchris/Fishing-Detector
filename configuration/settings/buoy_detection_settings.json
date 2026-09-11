@@ -5,8 +5,8 @@
     "missed_red_pixels": 4000,
     "red_min": 40,
     "red_dominance": 3,
-    "bait_green_pixels": 100,
-    "bait_green_dominance": 3,
-    "bait_missed_red_pixels": 5000,
-    "bait_red_dominance": 3.5
+    "bait_green_pixels": 50,
+    "bait_green_dominance": 2,
+    "bait_missed_red_pixels": 50,
+    "bait_red_dominance": 2
 }

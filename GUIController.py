@@ -14,20 +14,33 @@ from Paths import SETTINGS_DIR, ICON_FILE
 
 WINDOW_TITLE = "Fishing Controller"
 
-WINDOW_WIDTH = 700
-WINDOW_HEIGHT = 980
+WINDOW_WIDTH = 720
+WINDOW_HEIGHT = 1000
 
-BG_COLOR = "#1e1e1e"
-TEXT_COLOR = "#ffffff"
-SECONDARY_COLOR = "#aaaaaa"
-ENTRY_BG = "#2b2b2b"
-BUTTON_BG = "#333333"
-BUTTON_ACTIVE = "#444444"
+BG_COLOR = "#15171c"
+PANEL_COLOR = "#1c1f26"
+CARD_COLOR = "#20242c"
+ACCENT_COLOR = "#4f8dfd"
+ACCENT_HOVER = "#3f7ae0"
+TEXT_COLOR = "#f2f3f5"
+SUBTEXT_COLOR = "#9aa0ab"
+ENTRY_BG = "#20242c"
+BORDER_COLOR = "#2a2e37"
 
-STOPPED_COLOR = "#ff4444"
-ACTIVE_COLOR = "#44dd66"
-STARTING_COLOR = "#ffaa00"
-LOADED_COLOR = "#55aaff"
+BUTTON_BG = "#262a33"
+BUTTON_HOVER = "#30343f"
+
+STOPPED_COLOR = "#ff5c5c"
+ACTIVE_COLOR = "#3ddc84"
+STARTING_COLOR = "#f5a623"
+LOADED_COLOR = "#4f8dfd"
+
+LOAD_COLOR = "#2a5fb8"
+LOAD_HOVER = "#3570cf"
+START_COLOR = "#1f8b4c"
+START_HOVER = "#26a35a"
+STOP_COLOR = "#a33636"
+STOP_HOVER = "#bd3f3f"
 
 DEFAULT_ACTION_DELAY = 3.0
 MIN_ACTION_DELAY = 0.1
@@ -121,74 +134,112 @@ class FishingControllerApp:
         self.root.after(100, self._monitor_state)
 
     def _build_ui(self):
-        tk.Label(
-            self.root,
-            text="FISHING CONTROLLER",
-            font=("Arial", 20, "bold"),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-        ).pack(pady=(18, 3))
-
-        status_frame = tk.Frame(
+        outer = tk.Frame(
             self.root,
             bg=BG_COLOR,
         )
-        status_frame.pack(pady=(2, 10))
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(
+            outer,
+            bg=BG_COLOR,
+        )
+        header.pack(
+            fill="x",
+            padx=32,
+            pady=(26, 4),
+        )
+
+        icon_dot = tk.Canvas(
+            header,
+            width=10,
+            height=10,
+            bg=BG_COLOR,
+            highlightthickness=0,
+        )
+        icon_dot.create_oval(
+            0, 0, 10, 10,
+            fill=ACCENT_COLOR,
+            outline="",
+        )
+        icon_dot.pack(side="left", pady=(6, 0))
 
         tk.Label(
-            status_frame,
-            text="Status:",
-            font=("Arial", 12),
+            header,
+            text="Fishing Controller",
+            font=("Segoe UI", 17, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(side="left")
+        ).pack(side="left", padx=(10, 0))
+
+        status_card = tk.Frame(
+            outer,
+            bg=PANEL_COLOR,
+        )
+        status_card.pack(
+            fill="x",
+            padx=32,
+            pady=(14, 14),
+        )
+
+        status_inner = tk.Frame(
+            status_card,
+            bg=PANEL_COLOR,
+        )
+        status_inner.pack(
+            fill="x",
+            padx=18,
+            pady=12,
+        )
+
+        status_left = tk.Frame(status_inner, bg=PANEL_COLOR)
+        status_left.pack(side="left")
+
+        tk.Label(
+            status_left,
+            text="STATUS",
+            font=("Segoe UI", 8, "bold"),
+            bg=PANEL_COLOR,
+            fg=SUBTEXT_COLOR,
+        ).pack(anchor="w")
 
         self.status_value = tk.Label(
-            status_frame,
+            status_left,
             text="STOPPED",
-            font=("Arial", 12, "bold"),
-            bg=BG_COLOR,
+            font=("Segoe UI", 13, "bold"),
+            bg=PANEL_COLOR,
             fg=STOPPED_COLOR,
         )
-        self.status_value.pack(side="left", padx=(6, 0))
+        self.status_value.pack(anchor="w")
 
-        model_status_frame = tk.Frame(
-            self.root,
-            bg=BG_COLOR,
-        )
-        model_status_frame.pack(pady=(0, 12))
+        status_right = tk.Frame(status_inner, bg=PANEL_COLOR)
+        status_right.pack(side="right")
 
         tk.Label(
-            model_status_frame,
-            text="Models:",
-            font=("Arial", 10),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-        ).pack(side="left")
+            status_right,
+            text="MODELS",
+            font=("Segoe UI", 8, "bold"),
+            bg=PANEL_COLOR,
+            fg=SUBTEXT_COLOR,
+        ).pack(anchor="e")
 
         self.model_status_value = tk.Label(
-            model_status_frame,
+            status_right,
             text="NOT LOADED",
-            font=("Arial", 10, "bold"),
-            bg=BG_COLOR,
-            fg=SECONDARY_COLOR,
+            font=("Segoe UI", 13, "bold"),
+            bg=PANEL_COLOR,
+            fg=SUBTEXT_COLOR,
         )
-        self.model_status_value.pack(side="left", padx=(6, 0))
+        self.model_status_value.pack(anchor="e")
 
-        tk.Label(
-            self.root,
-            text="TARGETS",
-            font=("Arial", 14, "bold"),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-        ).pack(pady=(0, 3))
+        self._section_label(outer, "TARGETS")
 
         targets_container = tk.Frame(
-            self.root,
+            outer,
             bg=BG_COLOR,
         )
         targets_container.pack(
-            padx=30,
+            padx=32,
             fill="both",
         )
 
@@ -197,7 +248,7 @@ class FishingControllerApp:
 
         self._build_target_panel(
             targets_container,
-            " FISH ",
+            "FISH",
             FISH_TARGETS,
             self.fish_vars,
             True,
@@ -205,17 +256,17 @@ class FishingControllerApp:
 
         self._build_target_panel(
             targets_container,
-            " OTHER ",
+            "OTHER",
             OTHER_TARGETS,
             self.other_vars,
             False,
         )
 
         target_button_frame = tk.Frame(
-            self.root,
+            outer,
             bg=BG_COLOR,
         )
-        target_button_frame.pack(pady=10)
+        target_button_frame.pack(pady=(10, 4))
 
         self.select_all_button = self._button(
             target_button_frame,
@@ -245,28 +296,37 @@ class FishingControllerApp:
         )
         self.clear_fish_button.pack(side="left", padx=4)
 
-        self._build_bait_points_ui()
+        self._build_bait_points_ui(outer)
 
-        delay_frame = tk.Frame(
-            self.root,
+        settings_row = tk.Frame(
+            outer,
             bg=BG_COLOR,
         )
-        delay_frame.pack(pady=(3, 7))
+        settings_row.pack(pady=(6, 8))
+
+        delay_frame = tk.Frame(
+            settings_row,
+            bg=BG_COLOR,
+        )
+        delay_frame.pack(side="left", padx=(0, 24))
 
         tk.Label(
             delay_frame,
-            text="Delay before next cast:",
-            font=("Arial", 10),
+            text="Delay before next cast",
+            font=("Segoe UI", 9),
             bg=BG_COLOR,
-            fg=TEXT_COLOR,
-        ).pack(side="left", padx=(0, 8))
+            fg=SUBTEXT_COLOR,
+        ).pack(anchor="w")
+
+        delay_row = tk.Frame(delay_frame, bg=BG_COLOR)
+        delay_row.pack(anchor="w", pady=(3, 0))
 
         self.delay_var = tk.DoubleVar(
             value=DEFAULT_ACTION_DELAY
         )
 
         self.delay_spinbox = tk.Spinbox(
-            delay_frame,
+            delay_row,
             from_=MIN_ACTION_DELAY,
             to=MAX_ACTION_DELAY,
             increment=0.1,
@@ -276,23 +336,24 @@ class FishingControllerApp:
             fg=TEXT_COLOR,
             insertbackground=TEXT_COLOR,
             buttonbackground=BUTTON_BG,
-            font=("Arial", 10),
+            relief="flat",
+            font=("Segoe UI", 10),
         )
         self.delay_spinbox.pack(side="left")
 
         tk.Label(
-            delay_frame,
+            delay_row,
             text="seconds",
-            font=("Arial", 10),
+            font=("Segoe UI", 9),
             bg=BG_COLOR,
-            fg=SECONDARY_COLOR,
-        ).pack(side="left", padx=(5, 0))
+            fg=SUBTEXT_COLOR,
+        ).pack(side="left", padx=(6, 0))
 
         bait_frame = tk.Frame(
-            self.root,
+            settings_row,
             bg=BG_COLOR,
         )
-        bait_frame.pack(pady=(4, 8))
+        bait_frame.pack(side="left")
 
         self.auto_bait_var = tk.BooleanVar(value=False)
 
@@ -303,35 +364,41 @@ class FishingControllerApp:
             command=self._auto_bait_changed,
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-            selectcolor="#444444",
+            selectcolor=CARD_COLOR,
             activebackground=BG_COLOR,
             activeforeground=TEXT_COLOR,
-            font=("Arial", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
         )
-        self.auto_bait_checkbox.pack()
+        self.auto_bait_checkbox.pack(anchor="w")
 
         tk.Label(
             bait_frame,
             text="Checks bait before fishing and after catches.",
-            font=("Arial", 8),
+            font=("Segoe UI", 8),
             bg=BG_COLOR,
-            fg=SECONDARY_COLOR,
-        ).pack(pady=(2, 0))
+            fg=SUBTEXT_COLOR,
+        ).pack(anchor="w", pady=(2, 0))
 
-        tk.Label(
-            self.root,
-            text="OUTPUT",
-            font=("Arial", 12, "bold"),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-        ).pack(pady=(8, 4))
+        self._section_label(outer, "OUTPUT")
+
+        log_card = tk.Frame(
+            outer,
+            bg=PANEL_COLOR,
+        )
+        log_card.pack(
+            padx=32,
+            pady=(4, 0),
+            fill="both",
+            expand=True,
+        )
 
         log_frame = tk.Frame(
-            self.root,
-            bg=BG_COLOR,
+            log_card,
+            bg=PANEL_COLOR,
         )
         log_frame.pack(
-            padx=25,
+            padx=10,
+            pady=10,
             fill="both",
             expand=True,
         )
@@ -339,8 +406,8 @@ class FishingControllerApp:
         self.log_text = tk.Text(
             log_frame,
             height=7,
-            bg="#111111",
-            fg="#dddddd",
+            bg="#111318",
+            fg="#c7cbd1",
             insertbackground=TEXT_COLOR,
             font=("Consolas", 9),
             borderwidth=0,
@@ -370,17 +437,17 @@ class FishingControllerApp:
         )
 
         button_frame = tk.Frame(
-            self.root,
+            outer,
             bg=BG_COLOR,
         )
-        button_frame.pack(pady=10)
+        button_frame.pack(pady=16)
 
         self.load_button = self._button(
             button_frame,
             "LOAD VALUES",
             self.load_values,
-            bg="#285b8b",
-            activebackground="#3474ad",
+            bg=LOAD_COLOR,
+            activebackground=LOAD_HOVER,
             width=18,
             height=2,
         )
@@ -390,8 +457,8 @@ class FishingControllerApp:
             button_frame,
             "START FISHING",
             self.start_fishing,
-            bg="#286b3b",
-            activebackground="#35894c",
+            bg=START_COLOR,
+            activebackground=START_HOVER,
             width=18,
             height=2,
             state="disabled",
@@ -402,39 +469,48 @@ class FishingControllerApp:
             button_frame,
             "STOP",
             self.stop_fishing,
-            bg="#8b3030",
-            activebackground="#aa3b3b",
+            bg=STOP_COLOR,
+            activebackground=STOP_HOVER,
             width=12,
             height=2,
         )
         self.stop_button.pack(side="left", padx=6)
 
-    def _build_bait_points_ui(self):
+    def _section_label(self, parent, text):
+        tk.Label(
+            parent,
+            text=text,
+            font=("Segoe UI", 10, "bold"),
+            bg=BG_COLOR,
+            fg=SUBTEXT_COLOR,
+        ).pack(
+            anchor="w",
+            padx=33,
+            pady=(14, 4),
+        )
+
+    def _build_bait_points_ui(self, parent):
         bait_points = get_bait_points()
 
-        self.bait_points_frame = tk.LabelFrame(
-            self.root,
-            text=" BAIT POINTS ",
-            font=("Arial", 11, "bold"),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-            bd=1,
-            relief="groove",
+        self._section_label(parent, "BAIT POINTS")
+
+        self.bait_points_frame = tk.Frame(
+            parent,
+            bg=PANEL_COLOR,
         )
         self.bait_points_frame.pack(
-            padx=30,
-            pady=(0, 8),
+            padx=32,
             fill="x",
         )
 
         header = tk.Frame(
             self.bait_points_frame,
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
         )
         header.pack(
             fill="x",
-            padx=8,
-            pady=(3, 2),
+            padx=14,
+            pady=(10, 4),
         )
 
         self.bait_points_toggle_button = self._button(
@@ -450,15 +526,15 @@ class FishingControllerApp:
         self.bait_points_status = tk.Label(
             header,
             text=f"{len(bait_points)} bait points selected",
-            font=("Arial", 9),
-            bg=BG_COLOR,
-            fg=SECONDARY_COLOR,
+            font=("Segoe UI", 9),
+            bg=PANEL_COLOR,
+            fg=SUBTEXT_COLOR,
         )
         self.bait_points_status.pack(side="left")
 
         self.bait_points_content = tk.Frame(
             self.bait_points_frame,
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
         )
         self.bait_points_content.pack(fill="x")
 
@@ -467,11 +543,11 @@ class FishingControllerApp:
 
         bait_grid = tk.Frame(
             self.bait_points_content,
-            bg=ENTRY_BG,
+            bg=CARD_COLOR,
         )
         bait_grid.pack(
-            padx=8,
-            pady=6,
+            padx=14,
+            pady=(0, 10),
             fill="x",
         )
 
@@ -492,12 +568,12 @@ class FishingControllerApp:
                 text=f"{index}: {point[0]}, {point[1]}",
                 variable=var,
                 command=self._bait_points_changed,
-                bg=ENTRY_BG,
+                bg=CARD_COLOR,
                 fg=TEXT_COLOR,
-                selectcolor="#444444",
-                activebackground=ENTRY_BG,
+                selectcolor=PANEL_COLOR,
+                activebackground=CARD_COLOR,
                 activeforeground=TEXT_COLOR,
-                font=("Arial", 8),
+                font=("Segoe UI", 8),
                 anchor="w",
             )
 
@@ -510,15 +586,15 @@ class FishingControllerApp:
                 row=row,
                 column=column,
                 sticky="w",
-                padx=5,
-                pady=2,
+                padx=6,
+                pady=3,
             )
 
         bait_button_frame = tk.Frame(
             self.bait_points_content,
-            bg=BG_COLOR,
+            bg=PANEL_COLOR,
         )
-        bait_button_frame.pack(pady=(2, 7))
+        bait_button_frame.pack(pady=(0, 10))
 
         self.select_all_bait_button = self._button(
             bait_button_frame,
@@ -578,7 +654,7 @@ class FishingControllerApp:
         bg = kwargs.pop("bg", BUTTON_BG)
         activebackground = kwargs.pop(
             "activebackground",
-            BUTTON_ACTIVE,
+            BUTTON_HOVER,
         )
 
         return tk.Button(
@@ -589,7 +665,12 @@ class FishingControllerApp:
             fg=TEXT_COLOR,
             activebackground=activebackground,
             activeforeground=TEXT_COLOR,
-            font=("Arial", 10),
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            borderwidth=0,
+            cursor="hand2",
+            padx=10,
+            pady=4,
             **kwargs,
         )
 
@@ -601,14 +682,9 @@ class FishingControllerApp:
         variables,
         left,
     ):
-        section = tk.LabelFrame(
+        section = tk.Frame(
             parent,
-            text=title,
-            font=("Arial", 11, "bold"),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-            bd=1,
-            relief="groove",
+            bg=PANEL_COLOR,
         )
 
         section.pack(
@@ -618,11 +694,23 @@ class FishingControllerApp:
             padx=(0, 8) if left else (8, 0),
         )
 
+        tk.Label(
+            section,
+            text=title,
+            font=("Segoe UI", 9, "bold"),
+            bg=PANEL_COLOR,
+            fg=SUBTEXT_COLOR,
+        ).pack(
+            anchor="w",
+            padx=12,
+            pady=(10, 4),
+        )
+
         canvas = tk.Canvas(
             section,
-            bg=ENTRY_BG,
+            bg=CARD_COLOR,
             highlightthickness=0,
-            height=280,
+            height=260,
         )
 
         scrollbar = tk.Scrollbar(
@@ -638,17 +726,20 @@ class FishingControllerApp:
         scrollbar.pack(
             side="right",
             fill="y",
+            pady=(0, 10),
         )
 
         canvas.pack(
             side="left",
             fill="both",
             expand=True,
+            padx=(10, 0),
+            pady=(0, 10),
         )
 
         inner = tk.Frame(
             canvas,
-            bg=ENTRY_BG,
+            bg=CARD_COLOR,
         )
 
         canvas.create_window(
@@ -674,12 +765,12 @@ class FishingControllerApp:
                 text=target,
                 variable=var,
                 command=self._save_settings,
-                bg=ENTRY_BG,
+                bg=CARD_COLOR,
                 fg=TEXT_COLOR,
-                selectcolor="#444444",
-                activebackground=ENTRY_BG,
+                selectcolor=PANEL_COLOR,
+                activebackground=CARD_COLOR,
                 activeforeground=TEXT_COLOR,
-                font=("Arial", 10),
+                font=("Segoe UI", 9),
                 anchor="w",
             ).pack(
                 fill="x",
@@ -1416,7 +1507,7 @@ class FishingControllerApp:
 
             self.model_status_value.config(
                 text="NOT LOADED",
-                fg=SECONDARY_COLOR,
+                fg=SUBTEXT_COLOR,
             )
 
     def main_state_changed(self, active):
